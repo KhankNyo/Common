@@ -130,11 +130,11 @@ extern "C" {
 #define ASSERT(cond, ...) DEBUG_ONLY(UNREACHABLE_IF(!(cond), "ASSERTION FAILED '"#cond"':\n" __VA_ARGS__))
 #define TODO(...) STATIC_ASSERT(false, "TODO: " __VA_ARGS__)
 #define RUNTIME_TODO(...) UNREACHABLE_IF(true, "TODO: "__VA_ARGS__)
-#define ASSERT_EXPRESSION_TYPE(expr, type) \
+#define ASSERT_EXPRESSION_TYPE(expr, type, msg) \
     STATIC_ASSERT(_Generic((expr), \
         type: true, \
         default: false), \
-        "Unequal types."\
+        ""msg\
     ) /* c11 is awesome, runs on msvc, clang, gcc and even tcc */
 
 #define STATIC_ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
