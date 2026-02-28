@@ -37,11 +37,11 @@ internal void PrintM4Raw(int Indent, m4f Mat)
         (void)eprintf("%*s[", Indent, "");
         for (int k = 0; k < 4; k++)
         {
-            eprintf("%3g", Mat.At[i][k]);
+            (void)eprintf("%3g", Mat.At[i][k]);
             if (k != 3)
-                eprintf(", ");
+                (void)eprintf(", ");
             else
-                eprintfln("]");
+                (void)eprintfln("]");
         }
     }
 }
