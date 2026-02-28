@@ -55,9 +55,9 @@ int main(void)
 
             SliceBuilder_CopyToSlice(&BuilderC, &C, &TmpArena);
             (void)printfln("====================== C Initial: ");
-            for (int i = 0; i < C.Count; i++)
+            slice_foreach(&C, i)
             {
-                (void)printfln("%d: C=%d", i, C.Data[i]);
+                (void)printfln("%d: C=%d", (int)slice_iterator_index(&C, i), *i);
             }
 
             SliceBuilder_Reset(&BuilderC);
@@ -71,9 +71,9 @@ int main(void)
         Arena_Alloc(&Arena, 1024);
 
         (void)printfln("====================== C Reset: ");
-        for (int i = 0; i < C.Count; i++)
+        slice_foreach(&C, i)
         {
-            (void)printfln("%d: C=%d", i, C.Data[i]);
+            (void)printfln("%d: C=%d", (int)slice_iterator_index(&C, i), *i);
         }
 
         (void)printfln("====================== A, B: ");

@@ -100,6 +100,8 @@ extern "C" {
 #define eprintfln(...) (fprintf(stderr, __VA_ARGS__) + fprintf(stderr, "\n"))
 #define printfln(...) (printf(__VA_ARGS__) + printf("\n"))
 #define fprintfln(f, ...) (fprintf(f, __VA_ARGS__), fprintf(f, "\n"))
+
+/* TODO: remove dynamic array? -- we already have slice */
 #define dynamic_array(type_name) \
     struct {\
         isize Count, Capacity;\

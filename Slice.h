@@ -32,6 +32,7 @@ extern "C" {
             SliceBuilder_CopyToSlice(&Array2Builder, &Array2, Arena);
         }
 
+
     slice builder function macros:
         // pushes an element into the builder, can be a compound literal
         void SliceBuilder_Push(slice_builder *Builder, element_type Element);
@@ -52,6 +53,17 @@ extern "C" {
         // resets the builder so that the Builder is empty 
         // and the next push will be the first element
         void SliceBuilder_Reset(slice_builder *Builder);
+
+
+    slice function macros:
+        // returns the index of a slice iterator
+        isize slice_iterator_index(slice *Slice, element_type *iterator_variable_name);
+
+        // iterates through every element within Slice
+        slice_for_each(slice *Slice, element_type *iterator_variable_name)
+        {
+            ... for loop body
+        }
  */
 
 typedef_struct(slice_builder__node_header);
@@ -72,6 +84,14 @@ typedef_struct(slice_builder__node_header);
     type *Data;\
     isize Count;\
 }
+
+#define slice_foreach(p_slice, iterator_name) \
+    for (typeof((p_slice)->Data) iterator_name = (p_slice)->Data; \
+        iterator_name < (p_slice)->Data + (p_slice)->Count; \
+        iterator_name++)
+
+#define slice_iterator_index(p_slice, iterator_name) \
+    (iterator_name - (p_slice)->Data)
 
 
 #define SliceBuilder_GetPoolCapacity(p_slice_builder) \
