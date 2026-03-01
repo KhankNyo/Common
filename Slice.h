@@ -85,12 +85,12 @@ typedef_struct(slice_builder__node_header);
     isize Count;\
 }
 
-#define slice_foreach(p_slice, iterator_name) \
+#define Slice_Foreach(p_slice, iterator_name) \
     for (typeof((p_slice)->Data) iterator_name = (p_slice)->Data; \
         iterator_name < (p_slice)->Data + (p_slice)->Count; \
         iterator_name++)
 
-#define slice_iterator_index(p_slice, iterator_name) \
+#define Slice_GetIteratorIndex(p_slice, iterator_name) \
     (iterator_name - (p_slice)->Data)
 
 
