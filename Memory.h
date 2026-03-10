@@ -67,11 +67,6 @@ void *Arena_AllocNonZero(arena_alloc *Arena, i64 SizeBytes);
 
 #define Arena_SetAlignment(p_arena, alignment) ((p_arena)->Alignment = (alignment))
 #define Arena_AllocArray(p_arena, p_array, count) (*(p_array) = Arena_Alloc(p_arena, sizeof((*(p_array))[0]) * (count)))
-#define Arena_AllocDynamicArray(p_arena, p_dynamic_array, count, capacity) \
-    ((*(p_dynamic_array) = (typeof(*(p_dynamic_array))){ \
-        .Count = (count), \
-        .Capacity = (capacity), \
-    }), Arena_AllocArray((p_arena), &(p_dynamic_array)->Data, (capacity)))
 
 /* allocate an array without zeroing memory */
 #define Arena_AllocArrayNonZero(p_arena, p_array, count) (*(p_array) = Arena_AllocNonZero(p_arena, sizeof((*(p_array))[0]) * (count)))

@@ -17,9 +17,9 @@ extern "C" {
         // arena_alloc *Arena = ...; arena was declared somewhere above...
         // arena_alloc *TmpArena = ...; tmp arena was declared somewhere above...
 
+        slice(i32) Array1, Array2;
         Arena_Scope(TmpArena)
         {
-            slice(i32) Array1, Array2;
             slice_builder(&Array1, 1024) Array1Builder = { .Arena = TmpArena, }, 
                                          Array2Builder = { .Arena = TmpArena, };
             for (int i = 0; i < ...; i++)
@@ -31,6 +31,7 @@ extern "C" {
             SliceBuilder_CopyToSlice(&Array1Builder, &Array1, Arena);
             SliceBuilder_CopyToSlice(&Array2Builder, &Array2, Arena);
         }
+        // use Array1, Array2 here ...
 
 
     slice builder function macros:
@@ -57,10 +58,10 @@ extern "C" {
 
     slice function macros:
         // returns the index of a slice iterator
-        isize slice_iterator_index(slice *Slice, element_type *iterator_variable_name);
+        isize Slice_GetIteratorIndex(slice *Slice, element_type *iterator_variable_name);
 
         // iterates through every element within Slice
-        slice_for_each(slice *Slice, element_type *iterator_variable_name)
+        Slice_Foreach(slice *Slice, element_type *iterator_variable_name)
         {
             ... for loop body
         }
