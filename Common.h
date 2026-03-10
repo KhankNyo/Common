@@ -101,17 +101,6 @@ extern "C" {
 #define printfln(...) (printf(__VA_ARGS__) + printf("\n"))
 #define fprintfln(f, ...) (fprintf(f, __VA_ARGS__), fprintf(f, "\n"))
 
-/* TODO: remove dynamic array? -- we already have slice */
-#define dynamic_array(type_name) \
-    struct {\
-        isize Count, Capacity;\
-        type_name *Data;\
-    }
-#define dynamic_array_foreach(p_array, elem_ptr_name) \
-    for (typeof((p_array)->Data[0]) *elem_ptr_name = (p_array)->Data; \
-        elem_ptr_name < (p_array)->Data + (p_array)->Count; \
-        elem_ptr_name++\
-        )
 
 #if defined(_DEBUG)
 #  define DEBUG_ONLY(...) __VA_ARGS__
