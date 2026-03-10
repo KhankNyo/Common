@@ -125,7 +125,7 @@ extern "C" {
     STATIC_ASSERT(_Generic((expr), \
         type: true, \
         default: false), \
-        ""msg\
+        "" msg\
     ) /* c11 is awesome, runs on msvc, clang, gcc and even tcc */
 
 #define STATIC_ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
@@ -146,6 +146,24 @@ extern "C" {
 #define IS_SET(flag_bits, flags) (((flag_bits) & (flags)) != 0)
 #define IS_POWER_OF_2(value) (((value) & ((value) - 1)) == 0)
 #define TO_UPPER(ascii_char) ((ascii_char) & ~(1u << 5))
+
+/* TODO: remove this, Platform-Core.h and Renderer-Vulkan.h are depending on it, but its usage can be replaced by slice */
+#define dynamic_array(type_name) struct {\
+    type_name *Data;\
+    isize Count, Capacity;\
+}
+#define Arena_AllocDynamicArray(p_arena, p_dynamic_array, isize_new_count, isize_new_capacity) do {\
+    typeof(p_dynamic_array) dynamic_array_ = p_dynamic_array;\
+    dynamic_array_->Count = isize_new_count;\
+    dynamic_array_->Capacity = isize_new_capacity;\
+    Arena_AllocArray(p_arena, &dynamic_array_->Data, dynamic_array_->Capacity);\
+} while (0)
+#define dynamic_array_foreach(p_dynamic_array, iterator_name) for (\
+        typeof((p_dynamic_array)->Data) iterator_name = (p_dynamic_array)->Data;\
+        iterator_name < (p_dynamic_array)->Data + (p_dynamic_array)->Count;\
+        iterator_name++)
+
+
 
 #define KB 1024
 #define MB (1024*1024)

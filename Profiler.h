@@ -8,7 +8,7 @@ typedef_struct(profiler_scope);
 typedef_struct(profiler);
 
 header_function void Profiler_Init(profiler *Profiler, void *GetTimeData, profiler_get_elapsed_time_fn GetTime);
-header_function int Profiler_PrintGraph(const profiler *Profiler, char *OutStringBuffer, int OutStringBufferCapacity, bool32 ShouldReset);
+header_function int Profiler_PrintGraph(profiler *Profiler, char *OutStringBuffer, int OutStringBufferCapacity, bool32 ShouldReset);
 header_function void Profiler_Reset(profiler *Profiler);
 
 /* Profiler_Scope() usage: 
@@ -60,6 +60,9 @@ struct profiler__tmp_scope_data
 
 header_function void Profiler_Reset(profiler *Profiler)
 {
+    if (!Profiler) 
+        return;
+
     if (Profiler->ScopeCount > Profiler->ScopeCapacity)
     {
         Profiler->ScopeCapacity = Profiler->ScopeCount;
@@ -69,8 +72,11 @@ header_function void Profiler_Reset(profiler *Profiler)
     Profiler->NestLevel = 0;
 }
 
-header_function void Profiler_Init(profiler *Profiler, profiler_get_elapsed_time_fn GetTime, void *GetTimeData)
+header_function void Profiler_Init(profiler *Profiler, void *GetTimeData, profiler_get_elapsed_time_fn GetTime)
 {
+    if (!Profiler) 
+        return;
+
     *Profiler = (profiler) {
         .GetTimeData = GetTimeData,
         .GetTime = GetTime,
@@ -83,6 +89,9 @@ header_function void Profiler_Init(profiler *Profiler, profiler_get_elapsed_time
 
 header_function profiler__tmp_scope_data Profiler__StartScope(profiler *Profiler)
 {
+    if (!Profiler) 
+        return (profiler__tmp_scope_data) { .ShouldContinue = true };
+
     ASSERT(Profiler->ScopeCount < PROFILER_SCOPE_CAPACITY, "Too many scopes");
     profiler_scope *Scope = &Profiler->Scopes[Profiler->ScopeCount];
     Profiler->ScopeCount++;
@@ -99,6 +108,13 @@ header_function profiler__tmp_scope_data Profiler__StartScope(profiler *Profiler
 
 header_function void Profiler__EndScope(profiler *Profiler, profiler__tmp_scope_data *Data, const char *Name)
 {
+    ASSERT(Data);
+    if (!Profiler) 
+    {
+        Data->ShouldContinue = false;
+        return;
+    }
+
     double End = Profiler->GetTime(Profiler->GetTimeData);
     Data->CurrentScope->TimeEnd = End;
     Data->CurrentScope->Name = Name;
@@ -109,6 +125,9 @@ header_function void Profiler__EndScope(profiler *Profiler, profiler__tmp_scope_
 
 header_function int Profiler_PrintGraph(profiler *Profiler, char *OutStringBuffer, int OutStringBufferCapacity, bool32 ShouldReset)
 {
+    if (!Profiler) 
+        return 0;
+
     int Count = MAXIMUM(Profiler->ScopeCount, Profiler->ScopeCapacity);
 
     /* for graph formatting */

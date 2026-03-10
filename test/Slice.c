@@ -1,8 +1,9 @@
-#include "Slice.h"
-#include "Common.h"
 
+#include "Common.h"
+#include "Slice.h"
 #define MEMORY_IMPLEMENTATION
 #include "Memory.h"
+
 
 
 
