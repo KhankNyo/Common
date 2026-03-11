@@ -71,6 +71,7 @@ internal double GetElapsedTime(void)
 
 internal void OnMouseMove(GLFWwindow *Window, double X, double Y)
 {
+    (void)Window;
     platform_event Event = {
         .Type = PLATFORM_EVENT_MOUSE,
         .As.Mouse = {
@@ -84,6 +85,7 @@ internal void OnMouseMove(GLFWwindow *Window, double X, double Y)
 
 internal void OnMouseButton(GLFWwindow *Window, int Button, int Action, int Mods)
 {
+    (void)Mods;
     if (Action == GLFW_PRESS)
     {
         if (Button == GLFW_MOUSE_BUTTON_LEFT)
@@ -119,6 +121,7 @@ internal void OnMouseButton(GLFWwindow *Window, int Button, int Action, int Mods
 
 internal void OnWindowResize(GLFWwindow *Window, int Width, int Height)
 {
+    (void)Window;
     platform_event Event = {
         .Type = PLATFORM_EVENT_WINDOW_RESIZE,
         .As.WindowResize = {
@@ -131,6 +134,7 @@ internal void OnWindowResize(GLFWwindow *Window, int Width, int Height)
 
 internal void OnKeyInput(GLFWwindow *Window, int Key, int Scancode, int Action, int Mod)
 {
+    (void)Window, (void)Scancode, (void)Mod;
     platform_key_type KeyType = 0;
     switch (Key)
     {
@@ -190,6 +194,7 @@ internal void OnMouseWheel(GLFWwindow *Window, double ScrollX, double ScrollY)
 
 internal void OnFramebufferResize(GLFWwindow *Window, int Width, int Height)
 {
+    (void)Window;
     platform_event Event = {
         .Type = PLATFORM_EVENT_FRAMEBUFFER_RESIZE,
         .As.FramebufferResize = {
@@ -307,7 +312,6 @@ void *Platform_AllocateMemory(void *UserData, isize SizeBytes, usize Alignment)
     if (Allocator->Flags & PLATFORM_ALLOCATOR_FLAG_COMMIT_ON_ALLOCATE)
     {
         MapFlags |= MAP_ANONYMOUS;
-        eprintfln("Commiting");
     }
 
     u8 *Ptr = mmap(
@@ -414,7 +418,7 @@ platform_request_union *Platform_Request(platform_request_tag Tag, platform_requ
         }
         else
         {
-            eprintfln("[NOTE]: glfwGetVideoMode() failed, resorting to glfwGetWindowSize()");
+            (void)eprintfln("[NOTE]: glfwGetVideoMode() failed, resorting to glfwGetWindowSize()");
             glfwGetWindowSize(g_Window, &Data->MonitorDimensions.Width, &Data->MonitorDimensions.Height);
         }
     } break;
@@ -433,7 +437,7 @@ platform_request_union *Platform_Request(platform_request_tag Tag, platform_requ
         }
         else
         {
-            eprintfln("Unable to set mouse shape.");
+            (void)eprintfln("Unable to set mouse shape.");
         }
     } break;
     case PLATFORM_GET_ThreadCount:

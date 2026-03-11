@@ -72,14 +72,14 @@ void Vkm_Init(
         VkPhysicalDeviceMemoryProperties MemoryProperties;
         vkGetPhysicalDeviceMemoryProperties(PhysicalDevice, &MemoryProperties);
 
-        eprintfln("\nHeapCount: %d", MemoryProperties.memoryHeapCount);
+        (void)eprintfln("\nHeapCount: %d", MemoryProperties.memoryHeapCount);
         for (u32 i = 0; i < MemoryProperties.memoryHeapCount; i++)
         {
             VkMemoryHeap Heap = MemoryProperties.memoryHeaps[i];
-            eprintfln("    Heap %d: F:%08x, size:%zimb", i, Heap.flags, (isize)Heap.size/MB);
+            (void)eprintfln("    Heap %d: F:%08x, size:%zimb", i, Heap.flags, (isize)Heap.size/MB);
         }
-        eprintfln("\nTypeCount: %d", MemoryProperties.memoryTypeCount);
-#define PRINT_MEM_TYPE(t) eprintfln("  "#t": %d", t);
+        (void)eprintfln("\nTypeCount: %d", MemoryProperties.memoryTypeCount);
+#define PRINT_MEM_TYPE(t) (void)eprintfln("  "#t": %d", t);
         PRINT_MEM_TYPE(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         PRINT_MEM_TYPE(VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         PRINT_MEM_TYPE(VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
@@ -88,7 +88,7 @@ void Vkm_Init(
         {
             VkMemoryType Type = MemoryProperties.memoryTypes[i];
             VkMemoryHeap Heap = MemoryProperties.memoryHeaps[Type.heapIndex];
-            eprintfln("    Type %d: F:%08x, heapidx:%d, heapsize: %zigb", i, Type.propertyFlags, Type.heapIndex, Heap.size/(KB*MB));
+            (void)eprintfln("    Type %d: F:%08x, heapidx:%d, heapsize: %zigb", i, Type.propertyFlags, Type.heapIndex, Heap.size/(KB*MB));
         }
 #undef PRINT_MEM_TYPE
     }
@@ -589,8 +589,38 @@ force_inline VkDevice Vulkan_GetDevice(const renderer *Vk)
     return Vk->GpuContext.Device;
 }
 
+internal VkDebugReportCallbackEXT Vulkan_CreateDebugCallback(VkInstance Instance)
+{
+    VkDebugReportCallbackEXT DebugReportCallback = { 0 };
+
+    g_VkCreateDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(
+            Instance, "vkCreateDebugReportCallbackEXT"
+        );
+    g_VkDestroyDebugReportCallbackEXT = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(
+            Instance, "vkDestroyDebugReportCallbackEXT"
+        );
+
+    VkDebugReportCallbackCreateInfoEXT CreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT,
+        .pfnCallback = (PFN_vkDebugReportCallbackEXT) Vulkan_DebugCallback,
+        .flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT,
+    };
+    if (g_VkCreateDebugReportCallbackEXT(Instance, &CreateInfo, NULL, &DebugReportCallback) != VK_SUCCESS) 
+        (void)eprintfln("Failed to create debug callback.");
+    else (void)eprintfln("Created debug callback.");
+
+    return DebugReportCallback;
+}
+
+
 internal VkInstance Vulkan_CreateInstance(VkInstance *Instance, arena_alloc TmpArena, const char *AppName)
 {
+    NOT_DEBUG_ONLY(
+        /* to shut the compiler up */
+        (void)g_VkValidationLayerNames;
+        (void)Vulkan_CreateDebugCallback;
+    );
+
     vulkan_platform_instance_extensions RequiredExtensions = Vulkan_Platform_GetInstanceExtensions();
     /* query supported instance extensions and print them out */
     {
@@ -653,29 +683,6 @@ internal VkInstance Vulkan_CreateInstance(VkInstance *Instance, arena_alloc TmpA
     };
     VK_CHECK(vkCreateInstance(&CreateInfo, NULL, Instance));
     return *Instance;
-}
-
-internal VkDebugReportCallbackEXT Vulkan_CreateDebugCallback(VkInstance Instance)
-{
-    VkDebugReportCallbackEXT DebugReportCallback = { 0 };
-
-    g_VkCreateDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(
-            Instance, "vkCreateDebugReportCallbackEXT"
-        );
-    g_VkDestroyDebugReportCallbackEXT = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(
-            Instance, "vkDestroyDebugReportCallbackEXT"
-        );
-
-    VkDebugReportCallbackCreateInfoEXT CreateInfo = {
-        .sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT,
-        .pfnCallback = (PFN_vkDebugReportCallbackEXT) Vulkan_DebugCallback,
-        .flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT,
-    };
-    if (g_VkCreateDebugReportCallbackEXT(Instance, &CreateInfo, NULL, &DebugReportCallback) != VK_SUCCESS) 
-        (void)eprintfln("Failed to create debug callback.");
-    else (void)eprintfln("Created debug callback.");
-
-    return DebugReportCallback;
 }
 
 internal vk_swapchain_support_config Vulkan_QuerySwapchainSupportConfig(
@@ -973,20 +980,6 @@ internal vk_gpu_context Vulkan_CreateGpuContext(
     memcpy(GpuContext.QueueFamilyIndex, QueueFamilyIndex, sizeof(GpuContext.QueueFamilyIndex));
     vkGetPhysicalDeviceMemoryProperties(Gpu, &GpuContext.MemoryProperties);
     return GpuContext;
-}
-
-internal VkSampleCountFlagBits Vulkan_GetMaxSupportedSampleCount(const vk_gpu *Gpu)
-{
-    VkSampleCountFlags Bits = Gpu->Properties.limits.framebufferColorSampleCounts;
-#define PICK_IF_AVAILABLE(s) if (Bits & s) return s
-    PICK_IF_AVAILABLE(VK_SAMPLE_COUNT_64_BIT);
-    PICK_IF_AVAILABLE(VK_SAMPLE_COUNT_32_BIT);
-    PICK_IF_AVAILABLE(VK_SAMPLE_COUNT_16_BIT);
-    PICK_IF_AVAILABLE(VK_SAMPLE_COUNT_8_BIT);
-    PICK_IF_AVAILABLE(VK_SAMPLE_COUNT_4_BIT);
-    PICK_IF_AVAILABLE(VK_SAMPLE_COUNT_2_BIT);
-#undef PICK_IF_AVAILABLE
-    return VK_SAMPLE_COUNT_1_BIT;
 }
 
 internal VkImageView Vulkan_CreateImageView(VkDevice Device, VkImage Image, VkFormat Format, VkImageAspectFlags Aspect, u32 MipLevels)
@@ -1959,7 +1952,6 @@ internal void Vulkan_RecordCommandBuffer(
     const renderer_draw_group *Groups, isize GroupCount
 ) {
     vkm *Vkm = &Vk->GpuContext.VkMalloc;
-    VkDevice Device = Vulkan_GetDevice(Vk);
     vk_swapchain *Swapchain = &Vk->Swapchain;
     vk_swapchain_image *SwapchainImage = &Vk->SwapchainImage;
     VkCommandBufferBeginInfo BeginInfo = {
@@ -1995,13 +1987,6 @@ internal void Vulkan_RecordCommandBuffer(
                 .maxDepth = 1.0f, 
                 .minDepth = 0.0f,
             };
-            VkRect2D FullScreenScissor = {
-                .offset = { 0 },
-                .extent = {
-                    .width = Swapchain->Extent.width,
-                    .height = Swapchain->Extent.height,
-                }
-            };
 
             /* draw each group */
             for (int i = 0; i < GroupCount; i++)
@@ -2017,7 +2002,7 @@ internal void Vulkan_RecordCommandBuffer(
                     const renderer_scissor *Scissor = CurrGroup->Scissors + k;
                     const vk_mesh *Mesh = &Vk->MeshArray.Data[Scissor->Mesh.Value];
 
-                    VkRect2D VkScissor = (VkRect2D) {
+                    VkRect2D VkScissor = {
                         .offset = {
                             .x = Scissor->OffsetX,
                             .y = Scissor->OffsetY,
@@ -2531,6 +2516,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
         /* texture handle 0 contains a pink 1x1 texture */
         Arena_AllocDynamicArray(Arena, &Vk->TextureArray, 0, 256);
         renderer_texture_handle Texture = Renderer_UploadTexture(Vk, (u32[]) { 0xFF00FF00 }, 1, 1, 1, RENDERER_IMAGE_FORMAT_BGRA);
+        (void)Texture;
         ASSERT(Texture.Value == 0, "First texture");
     }
     /* initialize mesh array */
@@ -2551,9 +2537,7 @@ renderer_mesh_handle Renderer_UploadStaticMesh(
     const void *VertexBuffer, isize VertexCount, isize VertexSizeBytes,
     const u32 *Indices, isize IndexCount
 ) {
-    arena_alloc TmpArena = Vk->Arena;
     vk_gpu_context *GpuContext = &Vk->GpuContext;
-    VkDevice Device = GpuContext->Device;
 
     isize VertexBufferSizeBytes = VertexCount * VertexSizeBytes;
     isize IndexBufferSizeBytes = IndexCount * sizeof(Indices[0]);
@@ -2782,7 +2766,6 @@ renderer_texture_handle Renderer_UploadTexture(
     isize ImageSize = Width * Height * sizeof(u32);
     vk_gpu_context *GpuContext = &Vk->GpuContext;
     VkDevice Device = GpuContext->Device;
-    VkPhysicalDevice PhysicalDevice = GpuContext->PhysicalDevice;
     VkCommandPool CommandPool = Vk->CommandPool;
 
     /* create texture on the gpu */
@@ -2791,6 +2774,7 @@ renderer_texture_handle Renderer_UploadTexture(
     {
         vkm_buffer StagingBuffer = GpuContext->StagingBuffer;
         isize StagingBufferSize = Vkm_Buffer_GetSizeBytes(StagingBuffer);
+        (void)StagingBufferSize;
         ASSERT(ImageSize < StagingBufferSize, "Image too large");
         memcpy(GpuContext->StagingBufferPtr, Data, ImageSize);
 
@@ -2823,7 +2807,11 @@ renderer_texture_handle Renderer_UploadTexture(
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 
             MipLevels
         );
+        /* to shut the compiler up */
+        (void)Vulkan_GenerateMipmap;
 #else
+        /* to shut the compiler up */
+        (void)Vulkan_TransitionImageLayout;
         Vulkan_GenerateMipmap(GpuContext, CommandPool, 
             ImageFormat, Image, Width, Height, MipLevels
         );
