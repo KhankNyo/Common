@@ -75,6 +75,7 @@ extern "C" {
 #  define align(v) __declspec(alignas(v))
 #  define die_IMMEDIATELY() __assume(0)
 #  define STATIC_ASSERT(x, m) static_assert(x, m)
+#  define alignment_of(expr) __alignof(expr)
 #elif defined(COMPILER_CLANG) || defined(COMPILER_GCC) || defined(COMPILER_TCC)
 #  define force_inline static inline __attribute__((always_inline))
 #  define packed(...) __VA_ARGS__ __attribute__((packed)) 
@@ -85,11 +86,11 @@ extern "C" {
 #    define die_IMMEDIATELY() do { ((*(volatile char *)0) = 0); } while (0)
 #  endif
 #  define STATIC_ASSERT(x, m) _Static_assert(x, m)
+#  define alignment_of(expr) __alignof__(expr)
 #else
 #  error Unknown compiler, must add force_inline, packed(...), align(v), die_IMMEDIATELY(), STATIC_ASSERT(x, m)
 #endif
 
-#define type_alignment(type) (alignof(type)) /* TODO: works on msvc? */
 #define typedef_struct(name) typedef struct name name
 #define typedef_union(name) typedef union name name
 #define handle(scalar_subtype) struct { scalar_subtype Value; }
