@@ -1,5 +1,6 @@
 
 #include <string.h>
+#include <stdarg.h>
 
 #include "Common.h"
 #include "Platform-Core.h"
@@ -9,7 +10,7 @@
 
 
 #define FATAL(...) do {\
-    (void)eprintfln("FATAL: "__VA_ARGS__);\
+    Vulkan_LogLn("FATAL: "__VA_ARGS__);\
     exit(1);\
 } while (0)
 #define VK_CHECK(call) do {\
@@ -42,6 +43,17 @@ struct vk_vertex_description
 };
 
 
+internal void Vulkan_LogLn(const char *Fmt, ...)
+{
+    va_list Args;
+    va_start(Args, Fmt);
+    bool32 ShouldLog = false;
+    if (ShouldLog)
+    {
+        vfprintf(stderr, Fmt, Args);
+    }
+    va_end(Args);
+}
 
 internal i32 Vulkan_FindMemoryType(VkPhysicalDevice PhysDevice, u32 Filter, VkMemoryPropertyFlags Flags)
 {
@@ -72,14 +84,14 @@ void Vkm_Init(
         VkPhysicalDeviceMemoryProperties MemoryProperties;
         vkGetPhysicalDeviceMemoryProperties(PhysicalDevice, &MemoryProperties);
 
-        (void)eprintfln("\nHeapCount: %d", MemoryProperties.memoryHeapCount);
+        Vulkan_LogLn("\nHeapCount: %d", MemoryProperties.memoryHeapCount);
         for (u32 i = 0; i < MemoryProperties.memoryHeapCount; i++)
         {
             VkMemoryHeap Heap = MemoryProperties.memoryHeaps[i];
-            (void)eprintfln("    Heap %d: F:%08x, size:%zimb", i, Heap.flags, (isize)Heap.size/MB);
+            Vulkan_LogLn("    Heap %d: F:%08x, size:%zimb", i, Heap.flags, (isize)Heap.size/MB);
         }
-        (void)eprintfln("\nTypeCount: %d", MemoryProperties.memoryTypeCount);
-#define PRINT_MEM_TYPE(t) (void)eprintfln("  "#t": %d", t);
+        Vulkan_LogLn("\nTypeCount: %d", MemoryProperties.memoryTypeCount);
+#define PRINT_MEM_TYPE(t) Vulkan_LogLn("  "#t": %d", t);
         PRINT_MEM_TYPE(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         PRINT_MEM_TYPE(VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         PRINT_MEM_TYPE(VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
@@ -88,7 +100,7 @@ void Vkm_Init(
         {
             VkMemoryType Type = MemoryProperties.memoryTypes[i];
             VkMemoryHeap Heap = MemoryProperties.memoryHeaps[Type.heapIndex];
-            (void)eprintfln("    Type %d: F:%08x, heapidx:%d, heapsize: %zigb", i, Type.propertyFlags, Type.heapIndex, Heap.size/(KB*MB));
+            Vulkan_LogLn("    Type %d: F:%08x, heapidx:%d, heapsize: %zigb", i, Type.propertyFlags, Type.heapIndex, Heap.size/(KB*MB));
         }
 #undef PRINT_MEM_TYPE
     }
@@ -570,11 +582,11 @@ internal VkBool32 Vulkan_DebugCallback(
     (void)ObjType, (void)Location, (void)SrcObject, (void)UserData;
     if (Flags & VK_DEBUG_REPORT_ERROR_BIT_EXT) 
     {
-        (void)eprintfln("\nERROR: [%s] Code %d : %s", pLayerPrefix, MsgCode, Msg);
+        Vulkan_LogLn("\nERROR: [%s] Code %d : %s", pLayerPrefix, MsgCode, Msg);
     } 
     else if (Flags & VK_DEBUG_REPORT_WARNING_BIT_EXT) 
     {
-        (void)eprintfln("\nWARNING: [%s] Code %d : %s", pLayerPrefix, MsgCode, Msg);
+        Vulkan_LogLn("\nWARNING: [%s] Code %d : %s", pLayerPrefix, MsgCode, Msg);
     }
     return VK_FALSE;
 }
@@ -606,8 +618,8 @@ internal VkDebugReportCallbackEXT Vulkan_CreateDebugCallback(VkInstance Instance
         .flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT,
     };
     if (g_VkCreateDebugReportCallbackEXT(Instance, &CreateInfo, NULL, &DebugReportCallback) != VK_SUCCESS) 
-        (void)eprintfln("Failed to create debug callback.");
-    else (void)eprintfln("Created debug callback.");
+        Vulkan_LogLn("Failed to create debug callback.");
+    else Vulkan_LogLn("Created debug callback.");
 
     return DebugReportCallback;
 }
@@ -637,10 +649,10 @@ internal VkInstance Vulkan_CreateInstance(VkInstance *Instance, arena_alloc TmpA
                 &Count, SupportedInstanceExtensions
             ));
 
-        (void)eprintfln("Supported instance extensions (%d): ", Count);
+        Vulkan_LogLn("Supported instance extensions (%d): ", Count);
         for (u32 i = 0; i < Count; i++)
         {
-            (void)eprintfln("\t%s", SupportedInstanceExtensions[i].extensionName);
+            Vulkan_LogLn("\t%s", SupportedInstanceExtensions[i].extensionName);
         }
         VK_KHR_dynamic_rendering;
     }
@@ -656,10 +668,10 @@ internal VkInstance Vulkan_CreateInstance(VkInstance *Instance, arena_alloc TmpA
             Extensions[ExtensionCount - 1] = VK_EXT_DEBUG_REPORT_EXTENSION_NAME;
         );
     }
-    (void)eprintfln("Used %d extensions to create the Vulkan_ instance: ", ExtensionCount);
+    Vulkan_LogLn("Used %d extensions to create the Vulkan_ instance: ", ExtensionCount);
     for (u32 i = 0; i < ExtensionCount; i++)
     {
-        (void)eprintfln("\t%s", Extensions[i]);
+        Vulkan_LogLn("\t%s", Extensions[i]);
     }
 
     /* create the vulkan instance */
@@ -855,12 +867,12 @@ internal vk_physical_devices Vulkan_QueryAndSelectGpu(
         VK_CHECK(vkEnumeratePhysicalDevices(Instance, &Count, HandleList));
 
         /* report the devices found */
-        (void)eprintfln("Found %d devices that have Vulkan support:", Count);
+        Vulkan_LogLn("Found %d devices that have Vulkan support:", Count);
         for (u32 i = 0; i < Count; i++)
         {
             vkGetPhysicalDeviceFeatures(HandleList[i], &FeaturesList[i]);
             vkGetPhysicalDeviceProperties(HandleList[i], &PropertiesList[i]);
-            (void)eprintfln("Device %d, %s: %s: Supports version %d.%d.%d", 
+            Vulkan_LogLn("Device %d, %s: %s: Supports version %d.%d.%d", 
                 i, Vulkan_PhysicalDeviceTypeToString(PropertiesList[i].deviceType), PropertiesList[i].deviceName,
                 VK_VERSION_MAJOR(PropertiesList[i].apiVersion),
                 VK_VERSION_MINOR(PropertiesList[i].apiVersion),
@@ -901,7 +913,7 @@ internal vk_physical_devices Vulkan_QueryAndSelectGpu(
             .Properties = Gpus.PropertiesList[Selected],
             .Handle = Gpus.HandleList[Selected],
         };
-        (void)eprintfln("Selected device %d, %s: %s", 
+        Vulkan_LogLn("Selected device %d, %s: %s", 
             Selected, 
             Vulkan_PhysicalDeviceTypeToString(SelectedGpu.Properties.deviceType), 
             SelectedGpu.Properties.deviceName
