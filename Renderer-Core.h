@@ -185,7 +185,7 @@ void Renderer_CreateGraphicsPipelines(
 );
 
 
-/* call this whenever a uniform is needed to be updated, 
+/* call this whenever a uniform needs to be updated
  * after Renderer_CreateGraphicsPipelines()
  * */
 void Renderer_UpdateUniformBuffer(
