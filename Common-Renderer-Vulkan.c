@@ -2028,7 +2028,7 @@ internal void Vulkan_RecordCommandBuffer(
                     }; 
 
                     vkCmdSetScissor(CmdBuffer, 0, 1, &Scissor);
-                    ASSERT(Mesh->IndexCount, "handle: %d", Scissor->Mesh.Value);
+                    ASSERT(Mesh->IndexCount, "handle: %d", Group->MeshHandle.Value);
 
                     VkBuffer VertexBuffers[] = { Vkm_Buffer_GetVkBuffer(Vkm, Mesh->VertexBuffer) };
                     VkDeviceSize Offsets[] = { Vkm_Buffer_GetOffsetBytes(Mesh->VertexBuffer) };
@@ -2532,7 +2532,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
     {
         /* texture handle 0 contains a pink 1x1 texture */
         Arena_AllocDynamicArray(Arena, &Vk->TextureArray, 0, 256);
-        renderer_texture_handle Texture = Renderer_UploadTexture(Vk, (u32[]) { 0xFF00FF00 }, 1, 1, 1, RENDERER_IMAGE_FORMAT_BGRA);
+        renderer_texture_handle Texture = Renderer_UploadTexture(Vk, (u32[]) { 0xFFFF00FF }, 1, 1, 1, RENDERER_IMAGE_FORMAT_RGBA);
         (void)Texture;
         ASSERT(Texture.Value == 0, "First texture");
     }
@@ -3012,6 +3012,11 @@ void Renderer_CreateGraphicsPipelines(
         {
             const renderer_graphics_pipeline_config *Config = GraphicsPipelineConfigs + i;
             renderer_graphics_pipeline_handle Handle = { i + 1 };
+            bool32 EnableMSAA = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_MSAA);
+            UNREACHABLE_IF(!EnableMSAA && MSAASampleCount != RENDERER_NO_MSAA, 
+                "MSAASampleCount must be 1 if RENDERER_GFXFT_MSAA is not set in GraphicsPipelineConfigs[%d].EnabledGraphicsFeatures",
+                i
+            );
 
             VkCullModeFlags CullMode = VK_CULL_MODE_NONE; 
             VkFrontFace FrontFace = 0;
@@ -3034,7 +3039,7 @@ void Renderer_CreateGraphicsPipelines(
                     .CullModeFrontFace = FrontFace,
                     .EnableBlending = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_BLENDING),
                     .EnableDepthTesting = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_Z_BUFFER), 
-                    .EnableMSAA = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_MSAA), 
+                    .EnableMSAA = EnableMSAA, 
                     .MSAASampleCount = Vk->MSAASample,
                     .EnableSampleShading = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_SAMPLE_SHADING), 
                     .SampleShadingMin = Config->SampleShadingMin,
