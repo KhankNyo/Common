@@ -1956,7 +1956,7 @@ internal void Vulkan_RecreateSwapchain(renderer *Vk, arena_alloc *Arena)
 
 internal void Vulkan_RecordCommandBuffer(
     renderer *Vk, VkCommandBuffer CmdBuffer, u32 FramebufferIndex,
-    const renderer_draw_group *Groups, isize GroupCount
+    const renderer_draw_pipeline *Pipelines, i32 PipelineCount
 ) {
     vkm *Vkm = &Vk->GpuContext.VkMalloc;
     VkDevice Device = Vulkan_GetDevice(Vk);
@@ -2003,31 +2003,34 @@ internal void Vulkan_RecordCommandBuffer(
                 }
             };
 
-            /* draw each group */
-            for (int i = 0; i < GroupCount; i++)
+            /* bind each pipeline and draw each mesh group */
+            for (int i = 0; i < PipelineCount; i++)
             {
-                const renderer_draw_group *CurrGroup = Groups + i;
-                const vk_graphics_pipeline *Pipeline = &Vk->GraphicsPipelines.Data[CurrGroup->GraphicsPipelineHandle.Value];
+                const renderer_draw_pipeline *DrawPipeline = Pipelines + i;
+                const vk_graphics_pipeline *Pipeline = &Vk->GraphicsPipelines.Data[
+                    DrawPipeline->GraphicsPipelineHandle.Value
+                ];
 
                 vkCmdBindPipeline(CmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Handle);
                 vkCmdSetViewport(CmdBuffer, 0, 1, &FullScreenViewport);
 
-                for (int k = 0; k < CurrGroup->ScissorCount; k++)
+                for (int k = 0; k < DrawPipeline->GroupCount; k++)
                 {
-                    const renderer_scissor *Scissor = CurrGroup->Scissors + k;
-                    const vk_mesh *Mesh = &Vk->MeshArray.Data[Scissor->Mesh.Value];
+                    const renderer_draw_pipeline_group *Group = DrawPipeline->Groups + k;
+                    const vk_mesh *Mesh = &Vk->MeshArray.Data[Group->MeshHandle.Value];
 
-                    VkRect2D VkScissor = (VkRect2D) {
+                    VkRect2D Scissor = {
                         .offset = {
-                            .x = Scissor->OffsetX,
-                            .y = Scissor->OffsetY,
+                            .x = Group->Scissor.OffsetX,
+                            .y = Group->Scissor.OffsetY,
                         },
                         .extent = {
-                            .width = Scissor->Width,
-                            .height = Scissor->Height,
+                            .width = Group->Scissor.Width == 0? FullScreenScissor.extent.width : Group->Scissor.Width,
+                            .height = Group->Scissor.Height == 0? FullScreenScissor.extent.height : Group->Scissor.Height,
                         },
-                    };
-                    vkCmdSetScissor(CmdBuffer, 0, 1, &VkScissor);
+                    }; 
+
+                    vkCmdSetScissor(CmdBuffer, 0, 1, &Scissor);
                     ASSERT(Mesh->IndexCount, "handle: %d", Scissor->Mesh.Value);
 
                     VkBuffer VertexBuffers[] = { Vkm_Buffer_GetVkBuffer(Vkm, Mesh->VertexBuffer) };
@@ -2043,8 +2046,10 @@ internal void Vulkan_RecordCommandBuffer(
                     vkCmdBindDescriptorSets(CmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Layout, 0, 1, CurrentDescriptorSet, 0, NULL);
 
                     /* draw call */
-                    u32 IndexCount = MINIMUM(Scissor->MeshIndexCount, Mesh->IndexCount);
-                    vkCmdDrawIndexed(CmdBuffer, IndexCount, 1, Scissor->MeshIndexBase, 0, 0);
+                    u32 IndexCount = Group->Mesh_IndexBuffer_ElementCount;
+                    if (IndexCount == 0)
+                        IndexCount = Mesh->IndexCount;
+                    vkCmdDrawIndexed(CmdBuffer, IndexCount, 1, Group->Mesh_IndexBuffer_FirstElement, 0, 0);
                 }
             }
         }
@@ -2344,7 +2349,7 @@ internal VkFormat Vulkan_GetVkFormat(renderer_image_format Format)
 }
 
 
-void Renderer_Draw(renderer *Vk, const renderer_draw_group *Groups, isize GroupCount)
+void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 PipelineCount)
 {
     arena_alloc *Arena = &Vk->Arena;
     vk_gpu_context *GpuContext = &Vk->GpuContext;
@@ -2378,7 +2383,7 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_group *Groups, isize GroupC
 
     VkCommandBufferResetFlags Flags = 0;
     vkResetCommandBuffer(CmdBuffer, Flags);
-    Vulkan_RecordCommandBuffer(Vk, CmdBuffer, ImageIndex, Groups, GroupCount);
+    Vulkan_RecordCommandBuffer(Vk, CmdBuffer, ImageIndex, Pipelines, PipelineCount);
     if (Vk->ShouldUpdateUniformBuffer)
     {
         memcpy(Frame->UniformMappedMemoryArray[Vk->CurrentFrame], Vk->UniformBuffer.Data, Vk->UniformBuffer.Count);

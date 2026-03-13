@@ -15,7 +15,8 @@ typedef_struct(renderer_vertex_description);
 typedef_struct(renderer_graphics_pipeline_config);
 typedef_struct(renderer);
 typedef renderer *renderer_handle;
-typedef_struct(renderer_draw_group);
+typedef_struct(renderer_draw_pipeline);
+typedef_struct(renderer_draw_pipeline_group);
 typedef_struct(renderer_scissor);
 
 
@@ -94,20 +95,22 @@ struct renderer_graphics_pipeline_config
     } *VertexDescription; /* multiple pipelines can use the same vertex description */
 };
 
-struct renderer_scissor
+struct renderer_draw_pipeline
 {
-    i32 OffsetX, OffsetY;
-    u32 Width, Height;
-    u32 MeshIndexBase;
-    u32 MeshIndexCount; /* use UINT32_MAX to use the mesh's count */
-    renderer_mesh_handle Mesh;
-};
-
-struct renderer_draw_group
-{
-    const renderer_scissor *Scissors;
-    i32 ScissorCount;
     renderer_graphics_pipeline_handle GraphicsPipelineHandle;
+    i32 GroupCount;
+    struct renderer_draw_pipeline_group {
+        renderer_mesh_handle MeshHandle;
+        u32 Mesh_IndexBuffer_FirstElement;      /* index of the first element in the index buffer to start drawing from */
+        u32 Mesh_IndexBuffer_ElementCount;      /* the number of indices starting from the first element in the index buffer, 
+                                                    can be 0 to use all elements from the first element specified. */
+        /* if Width == 0, Width will be the screen width
+         * if Height == 0, Height will be the screen height */
+        struct renderer_scissor {
+            i32 OffsetX, OffsetY;               /* offsets are relative to the top left of the screen */
+            u32 Width, Height;                  /* screen width and height */
+        } Scissor;
+    } *Groups;
 };
 
 
@@ -159,12 +162,13 @@ renderer_mesh_handle Renderer_CreateMesh(
     isize IndexBufferCapacityBytes
 );
 /* updates a mesh created by Renderer_CreateMesh(), 
- * can be called any time after Renderer_Init() and before Renderer_Destroy() */
+ * can be called any time after Renderer_Init() and before Renderer_Destroy(), 
+ * and inside the lifetime of the mesh handle */
 renderer_result Renderer_UpdateMesh(
     renderer_handle Renderer, 
     renderer_mesh_handle Handle,
     const void *VertexBuffer, isize VertexCount, isize VertexElemSizeBytes,
-    const u32 *Indices, isize IndexCount
+    const u32 *IndexBuffer, isize IndexCount
 );
 
 /* 
@@ -192,11 +196,11 @@ void Renderer_UpdateUniformBuffer(
 /* call on a specific event */
 void Renderer_OnFramebufferResize(renderer_handle Renderer, int Width, int Height);
 
-/* One pipeline will be used for each group
- * One draw command will be issued for each scissor within a group */
+
+/* One actual draw command will be issued for each group in a pipeline */
 void Renderer_Draw(
     renderer_handle Renderer, 
-    const renderer_draw_group *DrawGroups, isize DrawGroupCount
+    const renderer_draw_pipeline *DrawPipelines, i32 DrawPipelineCount
 );
 
 

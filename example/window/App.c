@@ -4,11 +4,6 @@
 #include "Renderer-Core.h"
 #include "App.h"
 
-typedef_struct(uniform_buffer);
-packed(struct uniform_buffer
-{
-    u32 Dummy;
-});
 
 typedef_struct(vertex_buffer);
 struct vertex_buffer
@@ -19,6 +14,7 @@ struct vertex_buffer
 };
 
 internal void InitRenderer(app *App, const char *AppName);
+
 
 void App_OnInit(app *App)
 {
@@ -45,23 +41,17 @@ void App_OnLoop(app *App)
 
 void App_OnRender(app *App)
 {
-    platform_window_dimensions WindowDimensions = Platform_Get(WindowDimensions);
-    renderer_scissor FullScreenScissor = {
-        .Mesh = App->FullScreenMesh,
-        .MeshIndexBase = 0,
-        .MeshIndexCount = UINT32_MAX,
-        .OffsetX = 0,
-        .OffsetY = 0,
-        .Width = WindowDimensions.Width,
-        .Height = WindowDimensions.Height,
+    renderer_draw_pipeline_group Groups[] = {
+        [0] = { .MeshHandle = App->FullScreenMesh }
     };
-    int DrawGroupCount = 1;
-    renderer_draw_group DrawGroup = {
-        .ScissorCount = 1,
-        .Scissors = &FullScreenScissor,
-        .GraphicsPipelineHandle = App->GraphicsPipeline,
+    renderer_draw_pipeline DrawPipelines[] = {
+        [0] = {
+            .GroupCount = STATIC_ARRAY_SIZE(Groups),
+            .Groups = Groups,
+            .GraphicsPipelineHandle = App->GraphicsPipeline,
+        }
     };
-    Renderer_Draw(App->Renderer, &DrawGroup, DrawGroupCount);
+    Renderer_Draw(App->Renderer, DrawPipelines, STATIC_ARRAY_SIZE(DrawPipelines));
 }
 
 void App_OnEvent(app *App, platform_event Event)
@@ -82,11 +72,6 @@ void App_OnEvent(app *App, platform_event Event)
     }
 }
 
-
-internal double GetTime(void *)
-{
-    return Platform_Get(ElapsedTime);
-}
 
 
 internal void InitRenderer(app *App, const char *AppName)
