@@ -134,7 +134,7 @@ force_inline arena__node *Arena__NewNode(arena_alloc *Arena, arena__node *Next, 
     arena__node *Node = NULL;
     {
         i64 TotalSizeBytes = Arena_AlignSize(PoolSizeBytes + sizeof(Node[0]), Alignment);
-        Node = (typeof(Node))Arena->UserAlloc.Allocate(Arena->UserAlloc.Data, TotalSizeBytes, type_alignment(arena__node));
+        Node = (typeof(Node))Arena->UserAlloc.Allocate(Arena->UserAlloc.Data, TotalSizeBytes, alignment_of(arena__node));
         ASSERT(Node);
         Arena__ResetNode(Node, Next, TotalSizeBytes);
     }
