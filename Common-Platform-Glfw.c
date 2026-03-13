@@ -1,8 +1,13 @@
 
 
 /* the fuck is this shit?? */
-#define _BSD_SOURCE
-#define _DEFAULT_SOURCE
+#if !defined(_BSD_SOURCE)
+#  define _BSD_SOURCE
+#endif /* _BSD_SOURCE */
+#if !defined(_DEFAULT_SOURCE)
+#  define _DEFAULT_SOURCE
+#endif /* _DEFAULT_SOURCE */
+
 #include <unistd.h> /* usleep */
 #include <pthread.h>
 #include <sys/mman.h>
