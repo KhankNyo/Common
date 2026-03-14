@@ -73,6 +73,7 @@ struct vkm
     VkDevice Device;
     VkPhysicalDevice PhysicalDevice;
 
+    /* NOTE: for VkImage only */
     isize NewDeviceMemoryCapacity;
     i32 DeviceMemoryCount;
     struct vkm_device_memory {
@@ -117,21 +118,17 @@ struct vkm
 };
 
 
-void Vkm_Init(
+void Vkm_Create(
     vkm *Vkm, 
     VkDevice Device, VkPhysicalDevice PhysicalDevice, 
     i64 ImageMemoryPoolCapacityBytes,
-    i64 ResetCapacity[VKM_MEMORY_TYPE_COUNT],
+    i64 BufferMemoryPoolCapacityBytes[VKM_MEMORY_TYPE_COUNT],
     VkBufferUsageFlags DefaultUsages[VKM_MEMORY_TYPE_COUNT],
     VkMemoryPropertyFlags DefaultMemoryProperties[VKM_MEMORY_TYPE_COUNT]
 );
 void Vkm_Destroy(vkm *Vkm);
 
 vkm_buffer Vkm_CreateBuffer(vkm *Vkm, vkm_memory_type MemoryType, isize BufferSizeBytes);
-VkDeviceMemory Vkm_Buffer_GetVkDeviceMemory(const vkm *Vkm, vkm_buffer Buffer);
-VkBuffer Vkm_Buffer_GetVkBuffer(const vkm *Vkm, vkm_buffer Buffer);
-void *Vkm_Buffer_GetMappedMemory(vkm *Vkm, vkm_buffer Buffer);
-
 /* NOTE: defaults:
    memory property: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
    image layout: VK_IMAGE_LAYOUT_UNDEFINED
@@ -157,6 +154,11 @@ vkm_image_and_view Vkm_CreateImageAndView(
     VkImageUsageFlags Usage, 
     VkImageAspectFlags Aspect
 );
+
+VkDeviceMemory Vkm_Buffer_GetVkDeviceMemory(const vkm *Vkm, vkm_buffer Buffer);
+VkBuffer Vkm_Buffer_GetVkBuffer(const vkm *Vkm, vkm_buffer Buffer);
+void *Vkm_Buffer_GetMappedMemory(vkm *Vkm, vkm_buffer Buffer);
+
 vkm_image_and_view Vkm_ImageAndView_Resize(vkm *Vkm, vkm_image_and_view Iav, u32 NewWidth, u32 NewHeight);
 
 #endif /* COMMON_RENDERER_VULKAN_VKMALLOC_H */

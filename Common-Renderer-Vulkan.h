@@ -10,6 +10,9 @@
 #include "Common-Renderer-Vulkan-VkMalloc.h"
 
 
+
+#define VULKAN_RESOURCE_GROUP_CAPACITY 64
+
 #define QUEUE_FAMILY_INVALID_INDEX -1
 typedef i64 vk_queue_family_index;
 #define BINDING_COUNT 2
@@ -136,9 +139,6 @@ struct renderer
 
     VkRenderPass RenderPass;
 
-    /* renderer_resource_handle */
-    dynamic_array(VkDescriptorSetLayout) DescriptorSetLayouts;
-
     /* renderer_graphics_pipeline_handle */
     dynamic_array(vk_graphics_pipeline) GraphicsPipelines;
 
@@ -163,12 +163,30 @@ struct renderer
     VkSampleCountFlagBits MSAASample;
 
     vk_texture_array TextureArray;
-    /* renderer_mesh_handle */
-    dynamic_array(vk_mesh) MeshArray;
     dynamic_array(u8) UniformBuffer;
     bool8 ShouldUpdateUniformBuffer;
     bool8 IsResized;
     bool8 ForceTripleBuffering;
+
+
+    VkBufferUsageFlags GpuBufferUsageFlags[VKM_MEMORY_TYPE_COUNT];
+    VkMemoryPropertyFlags GpuMemoryProperties[VKM_MEMORY_TYPE_COUNT];
+
+
+#ifdef NEW_API
+    struct vk_resource_group
+    {
+        vkm GpuAllocator;
+        free_list_alloc CpuAllocator;
+    } *ResourceGroups;
+    u32 *ResourceGroupReference;
+    int ResourceGroupCount, ResourceGroupCapacity;
+
+    u32 ResourceUpdateID;
+#else
+    /* renderer_mesh_handle */
+    dynamic_array(vk_mesh) MeshArray;
+#endif
 
     profiler *Profiler;
 };

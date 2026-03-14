@@ -56,6 +56,7 @@ internal const char *g_VkValidationLayerNames[] = {
 };
 internal const char *g_VkDeviceExtensionNames[] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
 };
 internal PFN_vkCreateDebugReportCallbackEXT g_VkCreateDebugReportCallbackEXT;
 internal PFN_vkDestroyDebugReportCallbackEXT g_VkDestroyDebugReportCallbackEXT;
@@ -1492,7 +1493,11 @@ internal void Vulkan_RecordCommandBuffer(
                 for (int k = 0; k < DrawPipeline->GroupCount; k++)
                 {
                     const renderer_draw_pipeline_group *Group = DrawPipeline->Groups + k;
+#if defined(NEW_API)
+                    const vk_mesh *Mesh = Group->MeshHandle.Value;
+#else
                     const vk_mesh *Mesh = &Vk->MeshArray.Data[Group->MeshHandle.Value];
+#endif
 
                     VkRect2D Scissor = {
                         .offset = {
@@ -1832,98 +1837,6 @@ internal VkFormat Vulkan_GetVkFormat(renderer_image_format Format)
     UNREACHABLE_IF(true, "format: %d", Format);
 }
 
-
-void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 PipelineCount)
-{
-    arena_alloc *Arena = &Vk->Arena;
-    vk_gpu_context *GpuContext = &Vk->GpuContext;
-    vk_frame_data *Frame = &Vk->FrameData;
-    vk_swapchain_image *ScImage = &Vk->SwapchainImage;
-    VkDevice Device = Vulkan_GetDevice(Vk);
-    VkCommandBuffer CmdBuffer = Frame->CommandBufferArray[Vk->CurrentFrame];
-    VkSwapchainKHR Swapchain = Vk->Swapchain.Handle;
-
-    /* wait for gpu to finish displaying */
-    u32 ImageIndex = 0;
-    {
-        vkWaitForFences(Device, 1, &Frame->InFlightFenceArray[Vk->CurrentFrame], VK_TRUE, UINT64_MAX);
-        VkResult Result = vkAcquireNextImageKHR(
-            Device, Swapchain, UINT64_MAX, 
-            Frame->ImageAvailableSemaphoreArray[Vk->CurrentFrame], 
-            VK_NULL_HANDLE, &ImageIndex
-        );
-        if (Result == VK_ERROR_OUT_OF_DATE_KHR)
-        {
-            Vulkan_RecreateSwapchain(Vk, Arena);
-            return;
-        }
-        else if (Result != VK_SUCCESS && Result != VK_SUBOPTIMAL_KHR)
-        {
-            VK_FATAL("Vulkan: Unable to acquire next swapchain image.");
-        }
-    }
-    vkResetFences(Device, 1, &Frame->InFlightFenceArray[Vk->CurrentFrame]);
-
-
-    VkCommandBufferResetFlags Flags = 0;
-    vkResetCommandBuffer(CmdBuffer, Flags);
-    Vulkan_RecordCommandBuffer(Vk, CmdBuffer, ImageIndex, Pipelines, PipelineCount);
-    if (Vk->ShouldUpdateUniformBuffer)
-    {
-        memcpy(Frame->UniformMappedMemoryArray[Vk->CurrentFrame], Vk->UniformBuffer.Data, Vk->UniformBuffer.Count);
-        Vk->ShouldUpdateUniformBuffer = false;
-    }
-
-
-    VkPipelineStageFlags WaitStages[] = { 
-        //VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT 
-    };
-    VkSemaphore WaitSemaphores[] = { Frame->ImageAvailableSemaphoreArray[Vk->CurrentFrame], };
-    VkSemaphore SignalSemaphores[] = { ScImage->RenderFinishedSemaphoreArray[ImageIndex], };
-    VkSubmitInfo SubmitInfo = {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .waitSemaphoreCount = STATIC_ARRAY_SIZE(WaitSemaphores), 
-        .pWaitSemaphores = WaitSemaphores,
-        .pWaitDstStageMask = WaitStages,
-        .commandBufferCount = 1, 
-        .pCommandBuffers = &CmdBuffer,
-        .signalSemaphoreCount = STATIC_ARRAY_SIZE(SignalSemaphores),
-        .pSignalSemaphores = SignalSemaphores,
-    };
-    VK_CHECK(vkQueueSubmit(GpuContext->GraphicsQueue, 1, &SubmitInfo, 
-            Frame->InFlightFenceArray[Vk->CurrentFrame]
-        ));
-
-
-    u32 ImageIndices[] = { ImageIndex };
-    VkSwapchainKHR Swapchains[] = { Swapchain };
-    VkPresentInfoKHR PresentInfo = {
-        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .waitSemaphoreCount = STATIC_ARRAY_SIZE(SignalSemaphores),
-        .pWaitSemaphores = SignalSemaphores,
-        .swapchainCount = 1,
-        .pImageIndices = ImageIndices,
-        .pSwapchains = Swapchains,
-        .pResults = NULL,
-    };
-    {
-        VkResult Result = vkQueuePresentKHR(GpuContext->PresentQueue, &PresentInfo);
-        if (Result == VK_SUBOPTIMAL_KHR || Result == VK_ERROR_OUT_OF_DATE_KHR || Vk->IsResized)
-        {
-            Vulkan_RecreateSwapchain(Vk, Arena);
-        }
-        else if (Result != VK_SUCCESS && Result != VK_SUBOPTIMAL_KHR)
-        {
-            VK_FATAL("Vulkan: Unable to present swapchain image.");
-        }
-    }
-
-    Vk->CurrentFrame++;
-    if (Vk->CurrentFrame >= Vk->FramesInFlight)
-        Vk->CurrentFrame = 0;
-}
-
 /* NOTE: Image layout must be VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL */
 internal void Vulkan_GenerateMipmap(
     const vk_gpu_context *GpuContext, VkCommandPool CommandPool, 
@@ -2060,6 +1973,96 @@ internal void Vulkan_GenerateMipmap(
 }
 
 
+void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 PipelineCount)
+{
+    arena_alloc *Arena = &Vk->Arena;
+    vk_gpu_context *GpuContext = &Vk->GpuContext;
+    vk_frame_data *Frame = &Vk->FrameData;
+    vk_swapchain_image *ScImage = &Vk->SwapchainImage;
+    VkDevice Device = Vulkan_GetDevice(Vk);
+    VkCommandBuffer CmdBuffer = Frame->CommandBufferArray[Vk->CurrentFrame];
+    VkSwapchainKHR Swapchain = Vk->Swapchain.Handle;
+
+    /* wait for gpu to finish displaying */
+    u32 ImageIndex = 0;
+    {
+        vkWaitForFences(Device, 1, &Frame->InFlightFenceArray[Vk->CurrentFrame], VK_TRUE, UINT64_MAX);
+        VkResult Result = vkAcquireNextImageKHR(
+            Device, Swapchain, UINT64_MAX, 
+            Frame->ImageAvailableSemaphoreArray[Vk->CurrentFrame], 
+            VK_NULL_HANDLE, &ImageIndex
+        );
+        if (Result == VK_ERROR_OUT_OF_DATE_KHR)
+        {
+            Vulkan_RecreateSwapchain(Vk, Arena);
+            return;
+        }
+        else if (Result != VK_SUCCESS && Result != VK_SUBOPTIMAL_KHR)
+        {
+            VK_FATAL("Vulkan: Unable to acquire next swapchain image.");
+        }
+    }
+    vkResetFences(Device, 1, &Frame->InFlightFenceArray[Vk->CurrentFrame]);
+
+
+    VkCommandBufferResetFlags Flags = 0;
+    vkResetCommandBuffer(CmdBuffer, Flags);
+    Vulkan_RecordCommandBuffer(Vk, CmdBuffer, ImageIndex, Pipelines, PipelineCount);
+    if (Vk->ShouldUpdateUniformBuffer)
+    {
+        memcpy(Frame->UniformMappedMemoryArray[Vk->CurrentFrame], Vk->UniformBuffer.Data, Vk->UniformBuffer.Count);
+        Vk->ShouldUpdateUniformBuffer = false;
+    }
+
+
+    VkPipelineStageFlags WaitStages[] = { 
+        //VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT 
+    };
+    VkSemaphore WaitSemaphores[] = { Frame->ImageAvailableSemaphoreArray[Vk->CurrentFrame], };
+    VkSemaphore SignalSemaphores[] = { ScImage->RenderFinishedSemaphoreArray[ImageIndex], };
+    VkSubmitInfo SubmitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = STATIC_ARRAY_SIZE(WaitSemaphores), 
+        .pWaitSemaphores = WaitSemaphores,
+        .pWaitDstStageMask = WaitStages,
+        .commandBufferCount = 1, 
+        .pCommandBuffers = &CmdBuffer,
+        .signalSemaphoreCount = STATIC_ARRAY_SIZE(SignalSemaphores),
+        .pSignalSemaphores = SignalSemaphores,
+    };
+    VK_CHECK(vkQueueSubmit(GpuContext->GraphicsQueue, 1, &SubmitInfo, 
+            Frame->InFlightFenceArray[Vk->CurrentFrame]
+        ));
+
+
+    u32 ImageIndices[] = { ImageIndex };
+    VkSwapchainKHR Swapchains[] = { Swapchain };
+    VkPresentInfoKHR PresentInfo = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = STATIC_ARRAY_SIZE(SignalSemaphores),
+        .pWaitSemaphores = SignalSemaphores,
+        .swapchainCount = 1,
+        .pImageIndices = ImageIndices,
+        .pSwapchains = Swapchains,
+        .pResults = NULL,
+    };
+    {
+        VkResult Result = vkQueuePresentKHR(GpuContext->PresentQueue, &PresentInfo);
+        if (Result == VK_SUBOPTIMAL_KHR || Result == VK_ERROR_OUT_OF_DATE_KHR || Vk->IsResized)
+        {
+            Vulkan_RecreateSwapchain(Vk, Arena);
+        }
+        else if (Result != VK_SUCCESS && Result != VK_SUBOPTIMAL_KHR)
+        {
+            VK_FATAL("Vulkan: Unable to present swapchain image.");
+        }
+    }
+
+    Vk->CurrentFrame++;
+    if (Vk->CurrentFrame >= Vk->FramesInFlight)
+        Vk->CurrentFrame = 0;
+}
 
 renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 ForceTripleBuffering, profiler *Profiler) 
 {
@@ -2107,26 +2110,26 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
 
     /* initialize custom memory allocator */
     {
-        {
-            i64 ResetCapacity[] = {
-                [VKM_MEMORY_TYPE_GPU_LOCAL] = 32*MB,
-                [VKM_MEMORY_TYPE_CPU_VISIBLE] = 64*MB,
-            };
-            VkBufferUsageFlags Usages[] = {
-                [VKM_MEMORY_TYPE_GPU_LOCAL] = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                [VKM_MEMORY_TYPE_CPU_VISIBLE] = VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-            };
-            VkMemoryPropertyFlags MemoryProperties[] = {
-                [VKM_MEMORY_TYPE_GPU_LOCAL] = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                [VKM_MEMORY_TYPE_CPU_VISIBLE] = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            };
-            i64 ImagePoolCapacityBytes = 64*MB;
-            Vkm_Init(&GpuContext->VkMalloc, 
-                Device, GpuContext->PhysicalDevice, 
-                ImagePoolCapacityBytes,
-                ResetCapacity, Usages, MemoryProperties
-            );
-        }
+        Vk->GpuBufferUsageFlags[VKM_MEMORY_TYPE_CPU_VISIBLE] = 
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT; 
+        Vk->GpuBufferUsageFlags[VKM_MEMORY_TYPE_GPU_LOCAL] = 
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        Vk->GpuMemoryProperties[VKM_MEMORY_TYPE_GPU_LOCAL] = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        Vk->GpuMemoryProperties[VKM_MEMORY_TYPE_CPU_VISIBLE] = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+        i64 BufferPoolCapacity[] = {
+            [VKM_MEMORY_TYPE_GPU_LOCAL] = 32*MB,
+            [VKM_MEMORY_TYPE_CPU_VISIBLE] = 64*MB,
+        };
+        i64 ImagePoolCapacity = 64*MB;
+        Vkm_Create(&GpuContext->VkMalloc, 
+            Device, 
+            GpuContext->PhysicalDevice, 
+            ImagePoolCapacity,
+            BufferPoolCapacity,
+            Vk->GpuBufferUsageFlags, 
+            Vk->GpuMemoryProperties
+        );
 
         vkm_buffer StagingBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_CPU_VISIBLE, 64*MB);
         void *StagingBufferPtr;
@@ -2152,23 +2155,76 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
         Vk->Arena
     );
 
+#ifdef NEW_API
+#else
+    /* texture handle 0 contains a pink 1x1 texture */
     {
-        /* texture handle 0 contains a pink 1x1 texture */
         Arena_AllocDynamicArray(Arena, &Vk->TextureArray, 0, 256);
         renderer_texture_handle Texture = Renderer_UploadTexture(Vk, (u32[]) { 0xFFFF00FF }, 1, 1, 1, RENDERER_IMAGE_FORMAT_RGBA);
         (void)Texture;
         ASSERT(Texture.Value == 0, "First texture");
     }
+
     /* initialize mesh array */
     {
         /* NOTE: mesh handle 0 does not contain anything */
-        Arena_AllocDynamicArray(Arena, &Vk->MeshArray, 1, 256);
+        Arena_AllocDynamicArray(Arena, &Vk->MeshArray, 0, 256);
     }
-
+#endif
 
     ASSERT_EXPRESSION_TYPE(Vk, renderer_handle, "invalid type");
     return Vk;
 }
+
+
+
+void Renderer_UpdateUniformBuffer(renderer *Vk, const void *Data, isize SizeBytes) 
+{
+    /* don't actually update now because the uniform might be in use by the gpu, 
+     * wait until draw time to update, for now copy it into a tmp buffer */
+    ASSERT(SizeBytes <= Vk->UniformBuffer.Capacity, "Data too big for uniform buffer");
+    memcpy(Vk->UniformBuffer.Data, Data, SizeBytes);
+    Vk->UniformBuffer.Count = SizeBytes;
+    Vk->ShouldUpdateUniformBuffer = true;
+}
+
+
+
+#ifdef NEW_API
+
+renderer_resource_group_handle Renderer_CreateResourceGroup(
+    renderer *Vk, 
+    const renderer_resource_group_config *Config
+) {
+    vkm GpuAllocator;
+    {
+        isize BufferPoolSizeBytes[] = {
+            [VKM_MEMORY_TYPE_CPU_VISIBLE] = Config->CpuBufferPoolSizeBytes,
+            [VKM_MEMORY_TYPE_GPU_LOCAL] = Config->GpuBufferPoolSizeBytes,
+        };
+        Vkm_Create(&GpuAllocator,
+            Vulkan_GetDevice(Vk),
+            Vulkan_GetPhysicalDevice(Vk),
+            Config->ImagePoolSizeBytes,
+            BufferPoolSizeBytes, 
+            Vk->GpuBufferUsageFlags,
+            Vk->GpuMemoryProperties
+        );
+    }
+
+    arena_alloc CpuAllocator;
+    Arena_Create(&CpuAllocator, Vk->Arena.UserAlloc, Config->CpuBufferPoolSizeBytes, 16);
+}
+
+void Renderer_CommitResources(
+    renderer *Vk, 
+    renderer_resource_group_handle ResourceGroup
+) {
+    /* NOTE: we don't update resources here because the GPU might still be using them, defer the update to render time. */
+    Vk->ResourceUpdateID++;
+}
+
+#else
 
 renderer_mesh_handle Renderer_UploadStaticMesh(
     renderer *Vk, 
@@ -2204,17 +2260,6 @@ renderer_mesh_handle Renderer_UploadStaticMesh(
     return (renderer_mesh_handle) { Handle };
 }
 
-
-void Renderer_UpdateUniformBuffer(renderer *Vk, const void *Data, isize SizeBytes) 
-{
-    /* don't actually update now because the uniform might be in use by the gpu, 
-     * wait until draw time to update, for now copy it into a tmp buffer */
-    ASSERT(SizeBytes <= Vk->UniformBuffer.Capacity, "Data too big for uniform buffer");
-    memcpy(Vk->UniformBuffer.Data, Data, SizeBytes);
-    Vk->UniformBuffer.Count = SizeBytes;
-    Vk->ShouldUpdateUniformBuffer = true;
-}
-
 renderer_mesh_handle Renderer_CreateMesh(renderer *Vk, isize VertexBufferSizeBytes, isize IndexBufferSizeBytes)
 {
     vkm_buffer VertexBuffer = Vkm_CreateBuffer(&Vk->GpuContext.VkMalloc, VKM_MEMORY_TYPE_GPU_LOCAL, VertexBufferSizeBytes);
@@ -2230,7 +2275,7 @@ renderer_mesh_handle Renderer_CreateMesh(renderer *Vk, isize VertexBufferSizeByt
         .VertexCount = 0,
         .IndexCount = 0,
     };
-    return (renderer_mesh_handle) { Handle };
+    return (renderer_mesh_handle) { .Value = Handle };
 }
 
 renderer_result Renderer_UpdateMesh(
@@ -2259,7 +2304,6 @@ renderer_result Renderer_UpdateMesh(
     Vulkan_TransferDataToGpuLocalMemory(&Vk->GpuContext, Vk->CommandPool, Mesh->IndexBuffer, Indices, IndexBufferSizeBytes);
     return RENDERER_SUCCESS;
 }
-
 
 renderer_texture_handle Renderer_UploadTexture(
     renderer *Vk, 
@@ -2388,25 +2432,6 @@ renderer_texture_handle Renderer_UploadTexture(
     return TextureHandle;
 }
 
-
-bool32 Renderer_IsMSAASampleCountSupported(renderer_handle Vk, int SampleCount)
-{
-    switch (SampleCount)
-    {
-#define CASE(n) case n: if (Vk->Gpus.Selected.Properties.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_##n##_BIT) return true; break
-    CASE(1);
-    CASE(2);
-    CASE(4);
-    CASE(8);
-    CASE(16);
-    CASE(32);
-    CASE(64);
-#undef CASE
-    }
-    return false;
-}
-
-
 void Renderer_CreateGraphicsPipelines(
     renderer *Vk, 
     isize UniformBufferCapacity, 
@@ -2419,6 +2444,7 @@ void Renderer_CreateGraphicsPipelines(
     VkDevice Device = GpuContext->Device;
 
 
+#if 1
     /* swapchain init */
     {
         int Width = Vk->Swapchain.Extent.width;
@@ -2476,6 +2502,7 @@ void Renderer_CreateGraphicsPipelines(
         UniformBufferCapacity,
         &Vk->Arena
     );
+#endif
 
     Arena_AllocDynamicArray(&Vk->Arena, &Vk->GraphicsPipelines, GraphicsPipelineCount + 1, GraphicsPipelineCount + 1);
     {
@@ -2524,6 +2551,26 @@ void Renderer_CreateGraphicsPipelines(
         }
     }
 }
+#endif
+
+
+bool32 Renderer_IsMSAASampleCountSupported(renderer_handle Vk, int SampleCount)
+{
+    switch (SampleCount)
+    {
+#define CASE(n) case n: if (Vk->Gpus.Selected.Properties.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_##n##_BIT) return true; break
+    CASE(1);
+    CASE(2);
+    CASE(4);
+    CASE(8);
+    CASE(16);
+    CASE(32);
+    CASE(64);
+#undef CASE
+    }
+    return false;
+}
+
 
 void Renderer_Destroy(renderer *Vk)
 {

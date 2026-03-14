@@ -160,11 +160,11 @@ internal VkImageView Vkm__CreateVkImageView(vkm *Vkm, vkm_image_handle ImageHand
 
 
 
-void Vkm_Init(
+void Vkm_Create(
     vkm *Vkm, 
     VkDevice Device, VkPhysicalDevice PhysicalDevice, 
     i64 ImageMemoryPoolCapacityBytes,
-    i64 ResetCapacity[VKM_MEMORY_TYPE_COUNT],
+    i64 BufferMemoryPoolCapacityBytes[VKM_MEMORY_TYPE_COUNT],
     VkBufferUsageFlags DefaultUsages[VKM_MEMORY_TYPE_COUNT],
     VkMemoryPropertyFlags DefaultMemoryProperties[VKM_MEMORY_TYPE_COUNT]
 ) {
@@ -178,7 +178,7 @@ void Vkm_Init(
     };
     for (int i = 0; i < VKM_MEMORY_TYPE_COUNT; i++)
     {
-        Vkm->BufferPool[i].ResetCapacity = ResetCapacity[i];
+        Vkm->BufferPool[i].ResetCapacity = BufferMemoryPoolCapacityBytes[i];
         Vkm->BufferPool[i].DefaultUsages = DefaultUsages[i];
         Vkm->BufferPool[i].DefaultMemoryProperties = DefaultMemoryProperties[i];
     }
