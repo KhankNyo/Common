@@ -11,6 +11,46 @@
 #include "Common-Vulkan.h"
 
 
+typedef_struct(vk_vertex_description);
+
+
+typedef enum 
+{
+    DEVICE_RANK_NONE = 0, 
+    DEVICE_RANK_CPU, 
+    DEVICE_RANK_INTEGRATED_GPU, 
+    DEVICE_RANK_VIRTUAL_GPU,
+    DEVICE_RANK_DISCRETE_GPU,
+} device_rank;
+
+struct vk_vertex_description
+{
+    VkVertexInputBindingDescription Binding;
+    VkVertexInputAttributeDescription *Attribs;
+    int AttribCount;
+};
+
+typedef struct 
+{
+    bool8 EnableMSAA;
+    VkSampleCountFlags MSAASampleCount;
+
+    bool8 EnableDepthTesting;
+
+    VkCullModeFlags CullMode;
+    VkFrontFace CullModeFrontFace;
+
+    bool8 EnableSampleShading;
+    float SampleShadingMin;
+
+    bool8 EnableDepthBoundsTesting;
+    float DepthBoundsTestingMin, DepthBoundsTestingMax;
+
+    bool8 EnableBlending;
+} vk_graphics_pipeline_config;
+
+
+
 internal const char *g_VkValidationLayerNames[] = {
     "VK_LAYER_KHRONOS_validation", 
 };
@@ -20,15 +60,6 @@ internal const char *g_VkDeviceExtensionNames[] = {
 internal PFN_vkCreateDebugReportCallbackEXT g_VkCreateDebugReportCallbackEXT;
 internal PFN_vkDestroyDebugReportCallbackEXT g_VkDestroyDebugReportCallbackEXT;
 
-
-
-typedef_struct(vk_vertex_description);
-struct vk_vertex_description
-{
-    VkVertexInputBindingDescription Binding;
-    VkVertexInputAttributeDescription *Attribs;
-    int AttribCount;
-};
 
 
 
@@ -62,6 +93,24 @@ force_inline VkDevice Vulkan_GetDevice(const renderer *Vk)
     return Vk->GpuContext.Device;
 }
 
+internal VkSampleCountFlags Vulkan_GetVkSampleCountFlags(const vk_gpu *Gpu, int SampleCount)
+{
+    switch (SampleCount)
+    {
+#define CASE(n) case n: if (Gpu->Properties.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_##n##_BIT) return VK_SAMPLE_COUNT_##n##_BIT; break
+    CASE(1);
+    CASE(2);
+    CASE(4);
+    CASE(8);
+    CASE(16);
+    CASE(32);
+    CASE(64);
+#undef CASE
+    default: break;
+    }
+    UNREACHABLE_IF(true, "Invalid sample count");
+}
+
 internal VkDebugReportCallbackEXT Vulkan_CreateDebugCallback(VkInstance Instance)
 {
     VkDebugReportCallbackEXT DebugReportCallback = { 0 };
@@ -84,7 +133,6 @@ internal VkDebugReportCallbackEXT Vulkan_CreateDebugCallback(VkInstance Instance
 
     return DebugReportCallback;
 }
-
 
 internal VkInstance Vulkan_CreateInstance(VkInstance *Instance, arena_alloc TmpArena, const char *AppName)
 {
@@ -223,14 +271,6 @@ internal vk_queue_family_indices Vulkan_GetQueueFamilies(
 }
 
 
-typedef enum 
-{
-    DEVICE_RANK_NONE = 0, 
-    DEVICE_RANK_CPU, 
-    DEVICE_RANK_INTEGRATED_GPU, 
-    DEVICE_RANK_VIRTUAL_GPU,
-    DEVICE_RANK_DISCRETE_GPU,
-} device_rank;
 /* Out will not be written to if the returned rank is DEVICE_RANK_NONE */
 internal device_rank Vulkan_CheckDeviceSuitability(
     VkPhysicalDevice Device, VkSurfaceKHR WindowSurface, arena_alloc TmpArena
@@ -778,24 +818,6 @@ internal void Vulkan_DestroyGraphicsPipeline(VkDevice Device, vk_graphics_pipeli
     vkDestroyPipeline(Device, GraphicsPipeline->Handle, NULL);
 }
 
-typedef struct 
-{
-    bool8 EnableMSAA;
-    VkSampleCountFlags MSAASampleCount;
-
-    bool8 EnableDepthTesting;
-
-    VkCullModeFlags CullMode;
-    VkFrontFace CullModeFrontFace;
-
-    bool8 EnableSampleShading;
-    float SampleShadingMin;
-
-    bool8 EnableDepthBoundsTesting;
-    float DepthBoundsTestingMin, DepthBoundsTestingMax;
-
-    bool8 EnableBlending;
-} vk_graphics_pipeline_config;
 internal vk_graphics_pipeline Vulkan_CreateGraphicsPipeline(
     VkDevice Device, 
     VkRenderPass RenderPass, 
@@ -1902,208 +1924,6 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
         Vk->CurrentFrame = 0;
 }
 
-
-renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 ForceTripleBuffering, profiler *Profiler) 
-{
-    arena_alloc *Arena;
-    renderer *Vk;
-    {
-        arena_alloc TmpArena; 
-        platform_allocator Alloc = Platform_Get(Allocator);
-
-        // FUCK YOU GCC, why movaps????
-        // movaps and movups have the SAME PERFORMANCE on pretty much all modern x86 processors
-        //STATIC_ASSERT(get_type_alignment(renderer) == 16, "Why the fuck is this aligned on 16 byte boundary?");
-        //Arena_Create(&TmpArena, Alloc, 1*MB, sizeof(uintptr_t));
-
-        // fuck you gcc, I will align every piece of shit on cache line size, go fuck yourself
-        int AlignOnCacheLineSize = 64;
-        Arena_Create(&TmpArena, Alloc, 512 * KB, AlignOnCacheLineSize);
-
-        Vk = Arena_Alloc(&TmpArena, sizeof(renderer));
-        *Vk = (renderer) {
-            .Arena = TmpArena,
-            .Profiler = Profiler,
-            .FramesInFlight = FramesInFlight,
-            .ForceTripleBuffering = ForceTripleBuffering,
-        };
-        Arena = &Vk->Arena;
-    }
-
-
-    VkInstance Instance = Vulkan_CreateInstance(&Vk->Instance, *Arena, AppName);
-    DEBUG_ONLY(Vk->DebugReportCallback = Vulkan_CreateDebugCallback(Instance)); 
-    VK_CHECK(Vulkan_Platform_CreateWindowSurface(Instance, NULL, &Vk->WindowSurface));
-
-    vk_gpu_context *GpuContext;
-    VkDevice Device;
-    {
-        Vk->Gpus = Vulkan_QueryAndSelectGpu(Instance, Vk->WindowSurface, Arena);
-        Vk->Gpus.Selected.Features.sampleRateShading = VK_TRUE;
-        Vk->GpuContext = Vulkan_CreateGpuContext(Vk->Gpus.Selected.Handle, Vk->WindowSurface, Vk->Gpus.Selected.Features, *Arena);
-
-        GpuContext = &Vk->GpuContext;
-        Device = GpuContext->Device;
-        GpuContext->Profiler = Profiler;
-    }
-
-    /* initialize custom memory allocator */
-    {
-        {
-            i64 ResetCapacity[] = {
-                [VKM_MEMORY_TYPE_GPU_LOCAL] = 32*MB,
-                [VKM_MEMORY_TYPE_CPU_VISIBLE] = 64*MB,
-            };
-            VkBufferUsageFlags Usages[] = {
-                [VKM_MEMORY_TYPE_GPU_LOCAL] = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                [VKM_MEMORY_TYPE_CPU_VISIBLE] = VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-            };
-            VkMemoryPropertyFlags MemoryProperties[] = {
-                [VKM_MEMORY_TYPE_GPU_LOCAL] = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                [VKM_MEMORY_TYPE_CPU_VISIBLE] = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            };
-            i64 ImagePoolCapacityBytes = 64*MB;
-            Vkm_Init(&GpuContext->VkMalloc, 
-                Device, GpuContext->PhysicalDevice, 
-                ImagePoolCapacityBytes,
-                ResetCapacity, Usages, MemoryProperties
-            );
-        }
-
-        vkm_buffer StagingBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_CPU_VISIBLE, 64*MB);
-        void *StagingBufferPtr;
-        {
-            StagingBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_CPU_VISIBLE, 64*MB);
-            StagingBufferPtr = Vkm_Buffer_GetMappedMemory(&GpuContext->VkMalloc, StagingBuffer);
-        }
-        GpuContext->StagingBuffer = StagingBuffer;
-        GpuContext->StagingBufferPtr = StagingBufferPtr;
-    }
-
-
-    /* NOTE: command pool must be created before attempting to load resources onto the gpu */
-    Vk->CommandPool = Vulkan_CreateCommandPool(GpuContext);
-
-    platform_framebuffer_dimensions FramebufferDimensions = Platform_Get(FramebufferDimensions);
-    Vk->Swapchain = Vulkan_CreateSwapchain(
-        Vk->Profiler, GpuContext, 
-        FramebufferDimensions.Width, FramebufferDimensions.Height, 
-        Vk->ForceTripleBuffering,
-        Vk->WindowSurface, 
-        VK_NULL_HANDLE, 
-        Vk->Arena
-    );
-
-    {
-        /* texture handle 0 contains a pink 1x1 texture */
-        Arena_AllocDynamicArray(Arena, &Vk->TextureArray, 0, 256);
-        renderer_texture_handle Texture = Renderer_UploadTexture(Vk, (u32[]) { 0xFFFF00FF }, 1, 1, 1, RENDERER_IMAGE_FORMAT_RGBA);
-        (void)Texture;
-        ASSERT(Texture.Value == 0, "First texture");
-    }
-    /* initialize mesh array */
-    {
-        /* NOTE: mesh handle 0 does not contain anything */
-        Arena_AllocDynamicArray(Arena, &Vk->MeshArray, 1, 256);
-    }
-
-
-    ASSERT_EXPRESSION_TYPE(Vk, renderer_handle, "invalid type");
-    return Vk;
-}
-
-
-
-renderer_mesh_handle Renderer_UploadStaticMesh(
-    renderer *Vk, 
-    const void *VertexBuffer, isize VertexCount, isize VertexSizeBytes,
-    const u32 *Indices, isize IndexCount
-) {
-    vk_gpu_context *GpuContext = &Vk->GpuContext;
-
-    isize VertexBufferSizeBytes = VertexCount * VertexSizeBytes;
-    isize IndexBufferSizeBytes = IndexCount * sizeof(Indices[0]);
-    /*
-     * So apparently, the VkBufferUsageFlags is just a suggestion, 
-     * but for certain vkCmd* to work, you'd need to just *HAVE* the appropriate flags
-     *
-     * eg: vkCmdBindIndexBuffers needs VK_BUFFER_USAGE_INDEX_BUFFER_BIT, though it can have other flags, even VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-     * */
-
-    vk_mesh Mesh = {
-        .IndexBufferSizeBytes = IndexBufferSizeBytes,
-        .VertexBufferSizeBytes = VertexBufferSizeBytes,
-        .VertexCount = VertexCount,
-        .IndexCount = IndexCount,
-
-        .VertexBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_GPU_LOCAL, VertexBufferSizeBytes),
-        .IndexBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_GPU_LOCAL, IndexBufferSizeBytes),
-    };
-    Vulkan_TransferDataToGpuLocalMemory(GpuContext, Vk->CommandPool, Mesh.VertexBuffer, VertexBuffer, VertexBufferSizeBytes);
-    Vulkan_TransferDataToGpuLocalMemory(GpuContext, Vk->CommandPool, Mesh.IndexBuffer, Indices, IndexBufferSizeBytes);
-
-    ASSERT(Vk->MeshArray.Count < Vk->MeshArray.Capacity, "TODO: more meshes");
-    u32 Handle = Vk->MeshArray.Count++;
-    Vk->MeshArray.Data[Handle] = Mesh;
-    return (renderer_mesh_handle) { Handle };
-}
-
-
-void Renderer_UpdateUniformBuffer(renderer *Vk, const void *Data, isize SizeBytes) 
-{
-    /* don't actually update now because the uniform might be in use by the gpu, 
-     * wait until draw time to update, for now copy it into a tmp buffer */
-    ASSERT(SizeBytes <= Vk->UniformBuffer.Capacity, "Data too big for uniform buffer");
-    memcpy(Vk->UniformBuffer.Data, Data, SizeBytes);
-    Vk->UniformBuffer.Count = SizeBytes;
-    Vk->ShouldUpdateUniformBuffer = true;
-}
-
-renderer_mesh_handle Renderer_CreateMesh(renderer *Vk, isize VertexBufferSizeBytes, isize IndexBufferSizeBytes)
-{
-    vkm_buffer VertexBuffer = Vkm_CreateBuffer(&Vk->GpuContext.VkMalloc, VKM_MEMORY_TYPE_GPU_LOCAL, VertexBufferSizeBytes);
-    vkm_buffer IndexBuffer = Vkm_CreateBuffer(&Vk->GpuContext.VkMalloc, VKM_MEMORY_TYPE_GPU_LOCAL, IndexBufferSizeBytes);
-
-    ASSERT(Vk->MeshArray.Count < Vk->MeshArray.Capacity, "TODO: more meshes");
-    u32 Handle = Vk->MeshArray.Count++;
-    Vk->MeshArray.Data[Handle] = (vk_mesh) {
-        .VertexBuffer = VertexBuffer,
-        .IndexBuffer = IndexBuffer,
-        .VertexBufferSizeBytes = VertexBufferSizeBytes,
-        .IndexBufferSizeBytes = IndexBufferSizeBytes,
-        .VertexCount = 0,
-        .IndexCount = 0,
-    };
-    return (renderer_mesh_handle) { Handle };
-}
-
-renderer_result Renderer_UpdateMesh(
-    renderer *Vk, 
-    renderer_mesh_handle Handle,
-    const void *VertexBuffer, isize VertexCount, isize VertexSizeBytes,
-    const u32 *Indices, isize IndexCount
-) {
-    if (Vk->MeshArray.Count <= Handle.Value)
-    {
-        return RENDERER_ERROR_INVALID_HANDLE;
-    }
-
-    vk_mesh *Mesh = Vk->MeshArray.Data + Handle.Value;
-    isize VertexBufferSizeBytes = VertexCount * VertexSizeBytes;
-    isize IndexBufferSizeBytes = IndexCount * sizeof(Indices[0]);
-    if (Mesh->IndexBufferSizeBytes < IndexBufferSizeBytes
-    || Mesh->VertexBufferSizeBytes < VertexBufferSizeBytes)
-    {
-        return RENDERER_ERROR_OUT_OF_MEMORY;
-    }
-
-    Mesh->IndexCount = IndexCount;
-    Mesh->VertexCount = VertexCount;
-    Vulkan_TransferDataToGpuLocalMemory(&Vk->GpuContext, Vk->CommandPool, Mesh->VertexBuffer, VertexBuffer, VertexBufferSizeBytes);
-    Vulkan_TransferDataToGpuLocalMemory(&Vk->GpuContext, Vk->CommandPool, Mesh->IndexBuffer, Indices, IndexBufferSizeBytes);
-    return RENDERER_SUCCESS;
-}
-
 /* NOTE: Image layout must be VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL */
 internal void Vulkan_GenerateMipmap(
     const vk_gpu_context *GpuContext, VkCommandPool CommandPool, 
@@ -2239,6 +2059,208 @@ internal void Vulkan_GenerateMipmap(
     Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
 }
 
+
+
+renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 ForceTripleBuffering, profiler *Profiler) 
+{
+    arena_alloc *Arena;
+    renderer *Vk;
+    {
+        arena_alloc TmpArena; 
+        platform_allocator Alloc = Platform_Get(Allocator);
+
+        // FUCK YOU GCC, why movaps????
+        // movaps and movups have the SAME PERFORMANCE on pretty much all modern x86 processors
+        //STATIC_ASSERT(get_type_alignment(renderer) == 16, "Why the fuck is this aligned on 16 byte boundary?");
+        //Arena_Create(&TmpArena, Alloc, 1*MB, sizeof(uintptr_t));
+
+        // fuck you gcc, I will align every piece of shit on cache line size, go fuck yourself
+        int AlignOnCacheLineSize = 64;
+        Arena_Create(&TmpArena, Alloc, 512 * KB, AlignOnCacheLineSize);
+
+        Vk = Arena_Alloc(&TmpArena, sizeof(renderer));
+        *Vk = (renderer) {
+            .Arena = TmpArena,
+            .Profiler = Profiler,
+            .FramesInFlight = FramesInFlight,
+            .ForceTripleBuffering = ForceTripleBuffering,
+        };
+        Arena = &Vk->Arena;
+    }
+
+
+    VkInstance Instance = Vulkan_CreateInstance(&Vk->Instance, *Arena, AppName);
+    DEBUG_ONLY(Vk->DebugReportCallback = Vulkan_CreateDebugCallback(Instance)); 
+    VK_CHECK(Vulkan_Platform_CreateWindowSurface(Instance, NULL, &Vk->WindowSurface));
+
+    vk_gpu_context *GpuContext;
+    VkDevice Device;
+    {
+        Vk->Gpus = Vulkan_QueryAndSelectGpu(Instance, Vk->WindowSurface, Arena);
+        Vk->Gpus.Selected.Features.sampleRateShading = VK_TRUE;
+        Vk->GpuContext = Vulkan_CreateGpuContext(Vk->Gpus.Selected.Handle, Vk->WindowSurface, Vk->Gpus.Selected.Features, *Arena);
+
+        GpuContext = &Vk->GpuContext;
+        Device = GpuContext->Device;
+        GpuContext->Profiler = Profiler;
+    }
+
+    /* initialize custom memory allocator */
+    {
+        {
+            i64 ResetCapacity[] = {
+                [VKM_MEMORY_TYPE_GPU_LOCAL] = 32*MB,
+                [VKM_MEMORY_TYPE_CPU_VISIBLE] = 64*MB,
+            };
+            VkBufferUsageFlags Usages[] = {
+                [VKM_MEMORY_TYPE_GPU_LOCAL] = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                [VKM_MEMORY_TYPE_CPU_VISIBLE] = VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            };
+            VkMemoryPropertyFlags MemoryProperties[] = {
+                [VKM_MEMORY_TYPE_GPU_LOCAL] = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                [VKM_MEMORY_TYPE_CPU_VISIBLE] = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            };
+            i64 ImagePoolCapacityBytes = 64*MB;
+            Vkm_Init(&GpuContext->VkMalloc, 
+                Device, GpuContext->PhysicalDevice, 
+                ImagePoolCapacityBytes,
+                ResetCapacity, Usages, MemoryProperties
+            );
+        }
+
+        vkm_buffer StagingBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_CPU_VISIBLE, 64*MB);
+        void *StagingBufferPtr;
+        {
+            StagingBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_CPU_VISIBLE, 64*MB);
+            StagingBufferPtr = Vkm_Buffer_GetMappedMemory(&GpuContext->VkMalloc, StagingBuffer);
+        }
+        GpuContext->StagingBuffer = StagingBuffer;
+        GpuContext->StagingBufferPtr = StagingBufferPtr;
+    }
+
+
+    /* NOTE: command pool must be created before attempting to load resources onto the gpu */
+    Vk->CommandPool = Vulkan_CreateCommandPool(GpuContext);
+
+    platform_framebuffer_dimensions FramebufferDimensions = Platform_Get(FramebufferDimensions);
+    Vk->Swapchain = Vulkan_CreateSwapchain(
+        Vk->Profiler, GpuContext, 
+        FramebufferDimensions.Width, FramebufferDimensions.Height, 
+        Vk->ForceTripleBuffering,
+        Vk->WindowSurface, 
+        VK_NULL_HANDLE, 
+        Vk->Arena
+    );
+
+    {
+        /* texture handle 0 contains a pink 1x1 texture */
+        Arena_AllocDynamicArray(Arena, &Vk->TextureArray, 0, 256);
+        renderer_texture_handle Texture = Renderer_UploadTexture(Vk, (u32[]) { 0xFFFF00FF }, 1, 1, 1, RENDERER_IMAGE_FORMAT_RGBA);
+        (void)Texture;
+        ASSERT(Texture.Value == 0, "First texture");
+    }
+    /* initialize mesh array */
+    {
+        /* NOTE: mesh handle 0 does not contain anything */
+        Arena_AllocDynamicArray(Arena, &Vk->MeshArray, 1, 256);
+    }
+
+
+    ASSERT_EXPRESSION_TYPE(Vk, renderer_handle, "invalid type");
+    return Vk;
+}
+
+renderer_mesh_handle Renderer_UploadStaticMesh(
+    renderer *Vk, 
+    const void *VertexBuffer, isize VertexCount, isize VertexSizeBytes,
+    const u32 *Indices, isize IndexCount
+) {
+    vk_gpu_context *GpuContext = &Vk->GpuContext;
+
+    isize VertexBufferSizeBytes = VertexCount * VertexSizeBytes;
+    isize IndexBufferSizeBytes = IndexCount * sizeof(Indices[0]);
+    /*
+     * So apparently, the VkBufferUsageFlags is just a suggestion, 
+     * but for certain vkCmd* to work, you'd need to just *HAVE* the appropriate flags
+     *
+     * eg: vkCmdBindIndexBuffers needs VK_BUFFER_USAGE_INDEX_BUFFER_BIT, though it can have other flags, even VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+     * */
+
+    vk_mesh Mesh = {
+        .IndexBufferSizeBytes = IndexBufferSizeBytes,
+        .VertexBufferSizeBytes = VertexBufferSizeBytes,
+        .VertexCount = VertexCount,
+        .IndexCount = IndexCount,
+
+        .VertexBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_GPU_LOCAL, VertexBufferSizeBytes),
+        .IndexBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_GPU_LOCAL, IndexBufferSizeBytes),
+    };
+    Vulkan_TransferDataToGpuLocalMemory(GpuContext, Vk->CommandPool, Mesh.VertexBuffer, VertexBuffer, VertexBufferSizeBytes);
+    Vulkan_TransferDataToGpuLocalMemory(GpuContext, Vk->CommandPool, Mesh.IndexBuffer, Indices, IndexBufferSizeBytes);
+
+    ASSERT(Vk->MeshArray.Count < Vk->MeshArray.Capacity, "TODO: more meshes");
+    u32 Handle = Vk->MeshArray.Count++;
+    Vk->MeshArray.Data[Handle] = Mesh;
+    return (renderer_mesh_handle) { Handle };
+}
+
+
+void Renderer_UpdateUniformBuffer(renderer *Vk, const void *Data, isize SizeBytes) 
+{
+    /* don't actually update now because the uniform might be in use by the gpu, 
+     * wait until draw time to update, for now copy it into a tmp buffer */
+    ASSERT(SizeBytes <= Vk->UniformBuffer.Capacity, "Data too big for uniform buffer");
+    memcpy(Vk->UniformBuffer.Data, Data, SizeBytes);
+    Vk->UniformBuffer.Count = SizeBytes;
+    Vk->ShouldUpdateUniformBuffer = true;
+}
+
+renderer_mesh_handle Renderer_CreateMesh(renderer *Vk, isize VertexBufferSizeBytes, isize IndexBufferSizeBytes)
+{
+    vkm_buffer VertexBuffer = Vkm_CreateBuffer(&Vk->GpuContext.VkMalloc, VKM_MEMORY_TYPE_GPU_LOCAL, VertexBufferSizeBytes);
+    vkm_buffer IndexBuffer = Vkm_CreateBuffer(&Vk->GpuContext.VkMalloc, VKM_MEMORY_TYPE_GPU_LOCAL, IndexBufferSizeBytes);
+
+    ASSERT(Vk->MeshArray.Count < Vk->MeshArray.Capacity, "TODO: more meshes");
+    u32 Handle = Vk->MeshArray.Count++;
+    Vk->MeshArray.Data[Handle] = (vk_mesh) {
+        .VertexBuffer = VertexBuffer,
+        .IndexBuffer = IndexBuffer,
+        .VertexBufferSizeBytes = VertexBufferSizeBytes,
+        .IndexBufferSizeBytes = IndexBufferSizeBytes,
+        .VertexCount = 0,
+        .IndexCount = 0,
+    };
+    return (renderer_mesh_handle) { Handle };
+}
+
+renderer_result Renderer_UpdateMesh(
+    renderer *Vk, 
+    renderer_mesh_handle Handle,
+    const void *VertexBuffer, isize VertexCount, isize VertexSizeBytes,
+    const u32 *Indices, isize IndexCount
+) {
+    if (Vk->MeshArray.Count <= Handle.Value)
+    {
+        return RENDERER_ERROR_INVALID_HANDLE;
+    }
+
+    vk_mesh *Mesh = Vk->MeshArray.Data + Handle.Value;
+    isize VertexBufferSizeBytes = VertexCount * VertexSizeBytes;
+    isize IndexBufferSizeBytes = IndexCount * sizeof(Indices[0]);
+    if (Mesh->IndexBufferSizeBytes < IndexBufferSizeBytes
+    || Mesh->VertexBufferSizeBytes < VertexBufferSizeBytes)
+    {
+        return RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+
+    Mesh->IndexCount = IndexCount;
+    Mesh->VertexCount = VertexCount;
+    Vulkan_TransferDataToGpuLocalMemory(&Vk->GpuContext, Vk->CommandPool, Mesh->VertexBuffer, VertexBuffer, VertexBufferSizeBytes);
+    Vulkan_TransferDataToGpuLocalMemory(&Vk->GpuContext, Vk->CommandPool, Mesh->IndexBuffer, Indices, IndexBufferSizeBytes);
+    return RENDERER_SUCCESS;
+}
+
+
 renderer_texture_handle Renderer_UploadTexture(
     renderer *Vk, 
     const void *Data, u32 Width, u32 Height, u32 MipLevels,
@@ -2366,6 +2388,7 @@ renderer_texture_handle Renderer_UploadTexture(
     return TextureHandle;
 }
 
+
 bool32 Renderer_IsMSAASampleCountSupported(renderer_handle Vk, int SampleCount)
 {
     switch (SampleCount)
@@ -2383,23 +2406,6 @@ bool32 Renderer_IsMSAASampleCountSupported(renderer_handle Vk, int SampleCount)
     return false;
 }
 
-internal VkSampleCountFlags Vulkan_GetVkSampleCountFlags(const vk_gpu *Gpu, int SampleCount)
-{
-    switch (SampleCount)
-    {
-#define CASE(n) case n: if (Gpu->Properties.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_##n##_BIT) return VK_SAMPLE_COUNT_##n##_BIT; break
-    CASE(1);
-    CASE(2);
-    CASE(4);
-    CASE(8);
-    CASE(16);
-    CASE(32);
-    CASE(64);
-#undef CASE
-    default: break;
-    }
-    UNREACHABLE_IF(true, "Invalid sample count");
-}
 
 void Renderer_CreateGraphicsPipelines(
     renderer *Vk, 
