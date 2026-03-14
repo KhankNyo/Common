@@ -28,6 +28,7 @@ bin:
 	mkdir bin
 
 clean:
+	rm -f bin/*.spv
 	rm -f bin/deps.o
 	rm -f bin/test.o
 	rm -f bin/test

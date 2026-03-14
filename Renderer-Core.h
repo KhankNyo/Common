@@ -6,9 +6,6 @@
 #include "Profiler.h"
 
 #define RENDERER_IS_HANDLE_VALID(handle) ((handle).Value != 0)
-typedef handle(u32) renderer_mesh_handle; 
-typedef handle(u32) renderer_texture_handle;
-typedef handle(u32) renderer_resource_handle;
 typedef handle(u32) renderer_graphics_pipeline_handle;
 typedef_struct(renderer_vertex_attributes);
 typedef_struct(renderer_vertex_description);
@@ -18,6 +15,24 @@ typedef renderer *renderer_handle;
 typedef_struct(renderer_draw_pipeline);
 typedef_struct(renderer_draw_pipeline_group);
 typedef_struct(renderer_scissor);
+
+//#define NEW_API
+
+#if !defined(NEW_API)
+typedef handle(u32) renderer_mesh_handle; 
+typedef handle(u32) renderer_texture_handle;
+#else
+typedef handle(u32) renderer_resource_group_handle;
+typedef handle(u32) renderer_sampler_handle;
+typedef handle(u32) renderer_mutable_texture_handle;
+typedef handle(u32) renderer_mutable_mesh_handle;
+typedef handle(u32) renderer_static_texture_handle;
+typedef handle(u32) renderer_static_mesh_handle;
+
+typedef_struct(renderer_resource_group_config);
+typedef_struct(renderer_texture_config);
+typedef_struct(renderer_mesh_config);
+#endif
 
 
 typedef enum 
@@ -149,11 +164,13 @@ bool32 Renderer_IsMSAASampleCountSupported(renderer_handle Renderer, int SampleC
 
 /* uploads a texture on the gpu,
  * must be called between Renderer_Init() and Renderer_CreateGraphicsPipelines() */
+#if !defined(NEW_API)
 renderer_texture_handle Renderer_UploadTexture(
     renderer_handle Renderer, 
     const void *Image, u32 Width, u32 Height, u32 MipLevels,
     renderer_image_format Format
 );
+
 /* create a mesh on the gpu, can be updated via Renderer_UpdateMesh(), 
  * must be called in between Renderer_Init() and Renderer_CreateGraphicsPipelines() */
 renderer_mesh_handle Renderer_CreateMesh(
@@ -161,6 +178,7 @@ renderer_mesh_handle Renderer_CreateMesh(
     isize VertexBufferCapacityBytes, 
     isize IndexBufferCapacityBytes
 );
+
 /* updates a mesh created by Renderer_CreateMesh(), 
  * can be called any time after Renderer_Init() and before Renderer_Destroy(), 
  * and inside the lifetime of the mesh handle */
@@ -184,6 +202,112 @@ void Renderer_CreateGraphicsPipelines(
     renderer_graphics_pipeline_handle *OutGraphicsPipelines
 );
 
+#else
+
+struct renderer_resource_group_config 
+{
+};
+
+struct renderer_texture_sampler_config
+{
+};
+
+struct renderer_texture_config
+{
+    renderer_sampler_handle Sampler;
+    renderer_image_format Format;
+    u32 Width, Height;
+};
+
+struct renderer_mesh_config
+{
+    isize VertexBufferElementSizeBytes;
+    isize VertexCount;
+    isize IndexCount;
+};
+
+#define RENDERER_GLOBAL_RESOURCE_GROUP (renderer_resource_group_handle) { 0 }
+renderer_resource_group_handle Renderer_CreateResourceGroup(
+    renderer_handle Renderer,
+    const renderer_resource_group_config *ResourceGroupConfig
+);
+void Renderer_DestroyResourceGroup(
+    renderer_handle Renderer, 
+    renderer_resource_group_handle ResourceGroup
+);
+
+
+renderer_sampler_handle Renderer_CreateTextureSampler(
+    renderer_handle Renderer, 
+    renderer_resource_group_handle ResourceGroup,
+    const renderer_texture_sampler_config *TextureSamplerConfig
+);
+/* returns a texture handle, or the default texture (handle 0) if unable to create texture
+ * also returns a pointer to a staging buffer in OutTextureBuffer. 
+ * The staging buffer will have a capacity of Width*Height*4
+ * NOTE: only RENDERER_IMAGE_FORMAT_RGBA and RENDERER_IMAGE_FORMAT_BGRA are supported for mutable textures
+ * */
+renderer_mutable_texture_handle Renderer_CreateMutableTexture(
+    renderer_handle Renderer,
+    renderer_resource_group_handle ResourceGroup,
+    const renderer_texture_config *TextureConfig
+);
+renderer_mutable_mesh_handle Renderer_CreateMutableMesh(
+    renderer_handle Renderer, 
+    renderer_resource_group_handle ResourceGroup,
+    const renderer_mesh_config *MeshConfig
+);
+renderer_static_texture_handle Renderer_CreateStaticTexture(
+    renderer_handle Renderer,
+    renderer_resource_group_handle,
+    const renderer_texture_config *TextureConfig,
+    const void *Image
+);
+renderer_static_mesh_handle Renderer_CreateStaticMesh(
+    renderer_handle Renderer,
+    renderer_resource_group_handle ResourceGroup,
+    const renderer_mesh_config *MeshConfig,
+    const void *VertexBuffer,
+    const u32 *IndexBuffer
+);
+
+renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
+    renderer_handle Renderer,
+    renderer_resource_group_handle ResourceGroup,
+    const renderer_graphics_pipeline_config *GraphicsPipelineConfig
+);
+
+/* 
+ * call after all resources have been created
+ * */
+void Renderer_CreateGraphicsPipelines(
+    renderer_handle Renderer, 
+    isize UniformBufferCapacity, 
+#define RENDERER_NO_MSAA 1
+    int MSAASampleCount,
+    int GraphicsPipelineCount,
+    const renderer_graphics_pipeline_config *GraphicsPipelineConfig, /* per pipeline */
+    renderer_graphics_pipeline_handle *OutGraphicsPipelines
+);
+
+
+
+/* NOTE: Width and Height must be less than or equal to the width and height passed to Renderer_CreateMutableTexture() */
+void Renderer_UpdateMutableTexture(
+    renderer_handle Renderer, 
+    renderer_mutable_texture_handle MutableTexture,
+    const void *Buffer, u32 Width, u32 Height
+);
+
+/* updatese a mutable mesh */
+void Renderer_UpdateMutableMesh(
+    renderer_handle Renderer, 
+    renderer_mutable_mesh_handle MutableMesh,
+    const void *VertexBuffer, isize VertexCount, 
+    const u32 *IndexBuffer, isize IndexCount
+);
+
+#endif
 
 /* call this whenever a uniform needs to be updated
  * after Renderer_CreateGraphicsPipelines()

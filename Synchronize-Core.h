@@ -5,7 +5,7 @@
 #include "Common.h"
 
 #if defined(ARCH_X86)
-#  include "Synchronize-x86.h"
+#  include "Common-Synchronize-x86.h"
 #else
 #  error Synchronize.h: Unknown arch
 #endif

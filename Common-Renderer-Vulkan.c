@@ -5,32 +5,20 @@
 #include "Common.h"
 #include "Platform-Core.h"
 #include "Renderer-Core.h"
-#include "Renderer-Vulkan.h"
 #include "Profiler.h"
 
-
-#define FATAL(...) do {\
-    Vulkan_LogLn("FATAL: "__VA_ARGS__);\
-    exit(1);\
-} while (0)
-#define VK_CHECK(call) do {\
-    VkResult res = call;\
-    if (res != VK_SUCCESS) {\
-        FATAL("%s -- '"#call, Vulkan_VkResultToString(res));\
-    }\
-} while (0)
+#include "Common-Renderer-Vulkan.h"
+#include "Common-Vulkan.h"
 
 
 internal const char *g_VkValidationLayerNames[] = {
     "VK_LAYER_KHRONOS_validation", 
 };
 internal const char *g_VkDeviceExtensionNames[] = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };
 internal PFN_vkCreateDebugReportCallbackEXT g_VkCreateDebugReportCallbackEXT;
 internal PFN_vkDestroyDebugReportCallbackEXT g_VkDestroyDebugReportCallbackEXT;
-
-internal const char *Vulkan_VkResultToString(VkResult Result);
 
 
 
@@ -43,534 +31,7 @@ struct vk_vertex_description
 };
 
 
-internal void Vulkan_LogLn(const char *Fmt, ...)
-{
-    va_list Args;
-    va_start(Args, Fmt);
-    bool32 ShouldLog = false;
-    if (ShouldLog)
-    {
-        vfprintf(stderr, Fmt, Args);
-    }
-    va_end(Args);
-}
 
-internal i32 Vulkan_FindMemoryType(VkPhysicalDevice PhysDevice, u32 Filter, VkMemoryPropertyFlags Flags)
-{
-    VkPhysicalDeviceMemoryProperties MemoryProperties;
-    vkGetPhysicalDeviceMemoryProperties(PhysDevice, &MemoryProperties);
-    for (u32 i = 0; i < MemoryProperties.memoryTypeCount; i++)
-    {
-        // zzz
-        if (Filter & (1llu << i) && MemoryProperties.memoryTypes[i].propertyFlags & Flags)
-            return i;
-    }
-    return -1;
-}
-
-void Vkm_Init(
-    vkm *Vkm, 
-    VkDevice Device, VkPhysicalDevice PhysicalDevice, 
-    i64 ImageMemoryPoolCapacityBytes,
-    i64 ResetCapacity[VKM_MEMORY_TYPE_COUNT],
-    VkBufferUsageFlags DefaultUsages[VKM_MEMORY_TYPE_COUNT],
-    VkMemoryPropertyFlags DefaultMemoryProperties[VKM_MEMORY_TYPE_COUNT]
-) {
-    ASSERT_EXPRESSION_TYPE((vkm_buffer){0}.Info, u64, "invalid type");
-    STATIC_ASSERT(STATIC_ARRAY_SIZE(Vkm->BufferPool[0].Slot) == VKM_POOL_SLOT_COUNT, "");
-
-    /* prints memory types */
-    {
-        VkPhysicalDeviceMemoryProperties MemoryProperties;
-        vkGetPhysicalDeviceMemoryProperties(PhysicalDevice, &MemoryProperties);
-
-        Vulkan_LogLn("\nHeapCount: %d", MemoryProperties.memoryHeapCount);
-        for (u32 i = 0; i < MemoryProperties.memoryHeapCount; i++)
-        {
-            VkMemoryHeap Heap = MemoryProperties.memoryHeaps[i];
-            Vulkan_LogLn("    Heap %d: F:%08x, size:%zimb", i, Heap.flags, (isize)Heap.size/MB);
-        }
-        Vulkan_LogLn("\nTypeCount: %d", MemoryProperties.memoryTypeCount);
-#define PRINT_MEM_TYPE(t) Vulkan_LogLn("  "#t": %d", t);
-        PRINT_MEM_TYPE(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        PRINT_MEM_TYPE(VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        PRINT_MEM_TYPE(VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-        PRINT_MEM_TYPE(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-        for (u32 i = 0; i < MemoryProperties.memoryTypeCount; i++)
-        {
-            VkMemoryType Type = MemoryProperties.memoryTypes[i];
-            VkMemoryHeap Heap = MemoryProperties.memoryHeaps[Type.heapIndex];
-            Vulkan_LogLn("    Type %d: F:%08x, heapidx:%d, heapsize: %zigb", i, Type.propertyFlags, Type.heapIndex, Heap.size/(KB*MB));
-        }
-#undef PRINT_MEM_TYPE
-    }
-
-    *Vkm = (vkm) {
-        .Device = Device,
-        .PhysicalDevice = PhysicalDevice,
-        .NewDeviceMemoryCapacity = ImageMemoryPoolCapacityBytes,
-    };
-    for (int i = 0; i < VKM_MEMORY_TYPE_COUNT; i++)
-    {
-        Vkm->BufferPool[i].ResetCapacity = ResetCapacity[i];
-        Vkm->BufferPool[i].DefaultUsages = DefaultUsages[i];
-        Vkm->BufferPool[i].DefaultMemoryProperties = DefaultMemoryProperties[i];
-    }
-}
-
-
-VkDeviceMemory Vkm_Buffer_GetVkDeviceMemory(const vkm *Vkm, vkm_buffer Buffer)
-{
-    return Vkm->BufferPool[Vkm_Buffer_GetMemoryType(Buffer)]
-                    .Slot[Vkm_Buffer_GetPoolIndex(Buffer)].MemoryHandle;
-}
-VkBuffer Vkm_Buffer_GetVkBuffer(const vkm *Vkm, vkm_buffer Buffer)
-{
-    return Vkm->BufferPool[Vkm_Buffer_GetMemoryType(Buffer)]
-                    .Slot[Vkm_Buffer_GetPoolIndex(Buffer)].BufferHandle;
-}
-void *Vkm_Buffer_GetMappedMemory(vkm *Vkm, vkm_buffer Buffer)
-{
-    ASSERT(Vkm_Buffer_GetMemoryType(Buffer) == VKM_MEMORY_TYPE_CPU_VISIBLE, "Cannot map non-cpu visible memory");
-    vkm_buffer_pool_slot *Slot = 
-        &Vkm->BufferPool[Vkm_Buffer_GetMemoryType(Buffer)]
-                .Slot[Vkm_Buffer_GetPoolIndex(Buffer)];
-
-    u8 *Ptr = Slot->MappedMemory + Vkm_Buffer_GetOffsetBytes(Buffer);
-    return Ptr;
-}
-bool32 Vkm__BufferFits(const vkm_buffer_pool_slot *Slot, i64 BufferSizeBytes)
-{
-    /* TODO: turn this into a pool-style allocator */
-    i64 AlignedSize = Arena_AlignSize(BufferSizeBytes, Slot->Alignment);
-    bool32 Fits = Slot->SizeBytesRemain - AlignedSize >= 0;
-    return Fits;
-}
-typedef struct 
-{
-    i64 Offset;
-    VkDeviceMemory Handle;
-} vkm__allocate_device_memory_result;
-vkm__allocate_device_memory_result Vkm__AllocateDeviceMemory(vkm *Vkm, VkMemoryRequirements Requirements, VkMemoryPropertyFlags Flags)
-{
-    int MemoryTypeIndex = Vulkan_FindMemoryType(
-        Vkm->PhysicalDevice, 
-        Requirements.memoryTypeBits, 
-        Flags
-    );
-    ASSERT(MemoryTypeIndex > -1);
-    ASSERT(Vkm->DeviceMemoryCount <= (i64)STATIC_ARRAY_SIZE(Vkm->DeviceMemory));
-
-    for (int i = Vkm->DeviceMemoryCount - 1; i >= 0; i--)
-    {
-        vkm_device_memory *PoolSlot = &Vkm->DeviceMemory[i];
-        i64 Offset = Arena_AlignSize(PoolSlot->Offset, Requirements.alignment);
-        if (PoolSlot->TypeIndex == MemoryTypeIndex
-        && Offset + (isize)Requirements.size <= PoolSlot->Capacity)
-        {
-            /* found appropriate pool slot, allocate from it */
-            PoolSlot->Offset = Offset + Requirements.size;
-            return (vkm__allocate_device_memory_result) {
-                .Handle = PoolSlot->Handle,
-                .Offset = Offset,
-            };
-        }
-    }
-
-    /* create a new pool and allocate from it */
-    ASSERT(Vkm->DeviceMemoryCount + 1 <= (i64)STATIC_ARRAY_SIZE(Vkm->DeviceMemory));
-    u32 i = Vkm->DeviceMemoryCount;
-    VkDeviceMemory Memory;
-    {
-        i64 MaxMemoryCapacity = 
-            MAXIMUM((i64)Requirements.size, Vkm->NewDeviceMemoryCapacity);
-        VkMemoryAllocateInfo AllocateInfo = {
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .memoryTypeIndex = MemoryTypeIndex, 
-            .allocationSize = MaxMemoryCapacity,
-        };
-        // zzz
-        VK_CHECK(vkAllocateMemory(Vkm->Device, &AllocateInfo, NULL, &Memory));
-        Vkm->DeviceMemory[i] = (vkm_device_memory) {
-            .Handle = Memory,
-            .Capacity = MaxMemoryCapacity,
-            .Offset = Requirements.size,
-            .TypeIndex = MemoryTypeIndex,
-        };
-        Vkm->DeviceMemoryCount++;
-        Vkm->NewDeviceMemoryCapacity = MaxMemoryCapacity;
-    }
-    return (vkm__allocate_device_memory_result) {
-        .Handle = Memory,
-        .Offset = 0,
-    };
-}
-
-vkm_buffer Vkm_CreateBuffer(vkm *Vkm, vkm_memory_type MemoryType, isize BufferSizeBytes)
-{
-    vkm_buffer_pool *Pool = &Vkm->BufferPool[MemoryType];
-
-    /* find fit pool */
-    vkm_buffer_pool_slot *Slot = NULL;
-    u64 Offset = 0;
-    for (int i = Pool->SlotCount - 1; i >= 0; i--)
-    {
-        vkm_buffer_pool_slot *CurrSlot = &Pool->Slot[i];
-
-        /* TODO: this is currently an arena-style allocator, 
-         * maybe modify Vkm__BufferFits() so that it's more like a pool allocator */
-        if (Vkm__BufferFits(CurrSlot, BufferSizeBytes))
-        {
-            /* NOTE: alignment is already taken care of when pool is allocated */
-            Slot = CurrSlot;
-            Offset = Slot->Capacity - Slot->SizeBytesRemain;
-            break;
-        }
-    }
-
-    if (NULL == Slot)
-    {
-        isize NewBufferSize = MAXIMUM(BufferSizeBytes, Pool->ResetCapacity);
-        usize NewBufferAlignment = VKM_BUFFER_MIN_ALIGNMENT;
-        Pool->ResetCapacity = NewBufferSize;
-
-        VkBuffer Buffer;
-        VkMemoryRequirements MemoryRequirements;
-        {
-            VkBufferCreateInfo CreateInfo = {
-                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                .usage = Pool->DefaultUsages | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                .size = NewBufferSize,
-                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-
-                .flags = 0,
-                .pNext = NULL,
-                .queueFamilyIndexCount = 0,
-                .pQueueFamilyIndices = NULL, /* NOTE: must be filled when sharingMode is VK_SHARING_MODE_CONCURRENT */
-            };
-            VK_CHECK(vkCreateBuffer(Vkm->Device, &CreateInfo, NULL, &Buffer));
-            vkGetBufferMemoryRequirements(Vkm->Device, Buffer, &MemoryRequirements);
-        }
-
-        VkDeviceMemory Memory = VK_NULL_HANDLE;
-        void *MappedMemory = NULL;
-        {
-            int MemoryTypeIndex = Vulkan_FindMemoryType(Vkm->PhysicalDevice, MemoryRequirements.memoryTypeBits, Pool->DefaultMemoryProperties);
-            NewBufferAlignment = MAXIMUM(NewBufferAlignment, MemoryRequirements.alignment);
-            NewBufferSize = Arena_AlignSize(MAXIMUM(NewBufferSize, (isize)MemoryRequirements.size), NewBufferAlignment);
-
-            VkMemoryAllocateInfo AllocInfo = {
-                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                .memoryTypeIndex = MemoryTypeIndex,
-                .allocationSize = NewBufferSize,
-
-                .pNext = NULL,
-            };
-            VK_CHECK(vkAllocateMemory(Vkm->Device, &AllocInfo, NULL, &Memory));
-            vkBindBufferMemory(Vkm->Device, Buffer, Memory, 0);
-
-            if (MemoryType == VKM_MEMORY_TYPE_CPU_VISIBLE)
-            {
-                VK_CHECK(vkMapMemory(Vkm->Device, Memory, 0, NewBufferSize, 0, &MappedMemory));
-                ASSERT(MappedMemory);
-            }
-        }
-
-        /* create a new pool slot */
-        ASSERT(Pool->SlotCount < VKM_POOL_SLOT_COUNT, "Out of pool");
-        Pool->Slot[Pool->SlotCount] = (vkm_buffer_pool_slot) {
-            .BufferHandle = Buffer,
-            .MemoryHandle = Memory,
-            .MappedMemory = MappedMemory,
-            .Alignment = NewBufferAlignment,
-            .SizeBytesRemain = NewBufferSize,
-            .Capacity = NewBufferSize,
-        };
-        Slot = &Pool->Slot[Pool->SlotCount];
-        Pool->SlotCount++;
-    }
-
-    ASSERT(Slot != NULL);
-    ASSERT(Vkm__BufferFits(Slot, BufferSizeBytes), "Slot: %zi, alignment: %zi, BufferSizeBytes: %zi, aligned size: %zi", 
-        Slot->SizeBytesRemain, Slot->Alignment, BufferSizeBytes, Arena_AlignSize(BufferSizeBytes, Slot->Alignment)
-    );
-
-    u64 PoolIndex = Slot - Pool->Slot;
-    u64 AlignedOffset = Arena_AlignSize(Offset, Slot->Alignment);
-    u64 AlignedSize = Arena_AlignSize(BufferSizeBytes, Slot->Alignment);
-    ASSERT(PoolIndex <= VKM_POOL_SLOT_COUNT, "Invalid pool slot");
-    ASSERT(AlignedOffset <= VKM_BUFFER_MAX_OFFSET, "Invalid pool slot alignment");
-    ASSERT(AlignedSize <= VKM_BUFFER_MAX_SIZEBYTES, "Invalid pool slot size");
-
-    Slot->SizeBytesRemain -= AlignedSize;
-    vkm_buffer Buffer = Vkm__Buffer_Init(MemoryType, PoolIndex, AlignedOffset, AlignedSize); 
-    return Buffer;
-}
-
-
-VkImage Vkm__CreateVkImage(
-    VkDevice Device, 
-    u32 Width, u32 Height, u32 MipLevels, 
-    VkSampleCountFlagBits Samples,
-    VkFormat Format,
-    VkImageTiling Tiling, 
-    VkImageUsageFlags Usage
-) {
-    VkImage Image;
-    {
-        VkImageCreateInfo ImageCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .imageType = VK_IMAGE_TYPE_2D,
-            .tiling = Tiling, 
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .usage = Usage,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .samples = Samples,
-            .format = Format,
-            .extent = {
-                .depth = 1,
-                .width = Width, 
-                .height = Height,
-            },
-            .mipLevels = MipLevels,
-            .arrayLayers = 1,
-            .flags = 0,
-        };
-        VK_CHECK(vkCreateImage(Device, &ImageCreateInfo, NULL, &Image));
-    }
-    return Image;
-}
-
-VkImageView Vkm__CreateVkImageView(vkm *Vkm, vkm_image_handle ImageHandle, VkImageAspectFlags Aspect)
-{
-    VkImageViewCreateInfo ImageViewCreateInfo = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = Vkm_Image_Get(Vkm, ImageHandle).Handle,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = Vkm_Image_Get(Vkm, ImageHandle).Format,
-        .components = { /* default mapping, use channel values */
-            .r = VK_COMPONENT_SWIZZLE_IDENTITY,
-            .g = VK_COMPONENT_SWIZZLE_IDENTITY,
-            .b = VK_COMPONENT_SWIZZLE_IDENTITY,
-            .a = VK_COMPONENT_SWIZZLE_IDENTITY,
-        },
-        .subresourceRange = {
-            .aspectMask = Aspect, 
-            .baseMipLevel = 0, 
-            .levelCount = Vkm_Image_Get(Vkm, ImageHandle).MipLevels,
-            .baseArrayLayer = 0,
-            .layerCount = 1, 
-        },
-    };
-    VkImageView ImageView;
-    VK_CHECK(vkCreateImageView(Vkm->Device, &ImageViewCreateInfo, NULL, &ImageView));
-    return ImageView;
-
-}
-
-/* NOTE: defaults:
-   memory property: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-   image layout: VK_IMAGE_LAYOUT_UNDEFINED
-   image type: VK_IMAGE_TYPE_2D
-       extent.depth = 1
-   sharing mode: VK_SHARING_MODE_EXCLUSIVE
-   flags = 0
-*/
-vkm_image_handle Vkm_CreateImage(
-    vkm *Vkm, 
-    u32 Width, u32 Height, u32 MipLevels,
-    VkSampleCountFlagBits Samples,
-    VkFormat Format, 
-    VkImageTiling Tiling, 
-    VkImageUsageFlags Usage
-) {
-    VkDevice Device = Vkm->Device;
-    VkImage ImageHandle = Vkm__CreateVkImage(Vkm->Device, 
-        Width, Height, MipLevels, Samples, Format, Tiling, Usage
-    );
-    VkMemoryRequirements ImageMemoryRequirements;
-    vkGetImageMemoryRequirements(Vkm->Device, ImageHandle, &ImageMemoryRequirements);
-
-    i64 MemoryOffset;
-    VkDeviceMemory MemoryHandle;
-    {
-        VkMemoryPropertyFlags ImageMemoryProperties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        vkm__allocate_device_memory_result Result = Vkm__AllocateDeviceMemory(
-            Vkm, ImageMemoryRequirements, ImageMemoryProperties
-        );
-        MemoryHandle = Result.Handle;
-        MemoryOffset = Result.Offset;
-        VK_CHECK(vkBindImageMemory(Device, ImageHandle, MemoryHandle, MemoryOffset));
-    }
-
-    vkm_image_handle Handle = { 0 };
-    if (Vkm->ImageCount < (i32)STATIC_ARRAY_SIZE(Vkm->Images))
-    {
-        Handle.Value = Vkm->ImageCount;
-        Vkm->Images[Handle.Value] = (vkm_image) {
-            .Handle = ImageHandle,
-            .MemoryHandle = MemoryHandle,
-            .MemoryOffset = MemoryOffset,
-            .Width = Width,
-            .Height = Height,
-            .Samples = Samples,
-            .Capacity = ImageMemoryRequirements.size,
-            .MipLevels = MipLevels,
-            .Format = Format,
-            .Tiling = Tiling, 
-            .Usage = Usage,
-        };
-        Vkm->ImageCount++;
-    }
-    else
-    {
-        ASSERT(false, "Out of memory for image allocation");
-    }
-    return Handle;
-}
-
-vkm_image_and_view Vkm_CreateImageAndView(
-    vkm *Vkm, 
-    u32 Width, u32 Height, u32 MipLevels,
-    VkSampleCountFlagBits Samples,
-    VkFormat Format, 
-    VkImageTiling Tiling, 
-    VkImageUsageFlags Usage, 
-    VkImageAspectFlags Aspect
-) {
-    vkm_image_handle ImageHandle = Vkm_CreateImage(Vkm, 
-        Width, Height, MipLevels, Samples, Format, Tiling, Usage
-    );
-    VkImageView ImageView = Vkm__CreateVkImageView(Vkm, ImageHandle, Aspect);
-    return (vkm_image_and_view) {
-        .ImageHandle = ImageHandle,
-        .ImageView = ImageView,
-        .Aspect = Aspect,
-    };
-}
-
-/* NOTE: we assumed that the underlying image is not in use */
-vkm_image_and_view Vkm_ImageAndView_Resize(vkm *Vkm, vkm_image_and_view Iav, u32 NewWidth, u32 NewHeight)
-{
-    ASSERT((i32)Iav.ImageHandle.Value < Vkm->ImageCount, "%d", Iav.ImageHandle.Value);
-    vkm_image *Image = &Vkm->Images[Iav.ImageHandle.Value];
-    VkImage NewImage = Vkm__CreateVkImage(Vkm->Device, 
-        NewWidth, NewHeight, Image->MipLevels, Image->Samples, Image->Format, Image->Tiling, Image->Usage
-    );
-    VkMemoryRequirements MemoryRequirements;
-    vkGetImageMemoryRequirements(Vkm->Device, NewImage, &MemoryRequirements);
-
-    vkm_image_and_view NewIav;
-    if ((i64)MemoryRequirements.size > Image->Capacity)
-    {
-        /* image does not fit, add to free list and allocate new one */
-        vkDestroyImage(Vkm->Device, NewImage, NULL);
-        RUNTIME_TODO("resizing image that does not fit");
-    }
-    else
-    {
-        /* image with new dimensions fit, replace the old one with it */
-        vkBindImageMemory(Vkm->Device, NewImage, Image->MemoryHandle, Image->MemoryOffset);
-        vkDestroyImage(Vkm->Device, Image->Handle, NULL);
-        Image->Width = NewWidth;
-        Image->Height = NewHeight;
-        Image->Handle = NewImage;
-
-        vkDestroyImageView(Vkm->Device, Iav.ImageView, NULL);
-        VkImageView NewImageView = Vkm__CreateVkImageView(Vkm, Iav.ImageHandle, Iav.Aspect);
-
-        NewIav = (vkm_image_and_view) {
-            .ImageHandle = Iav.ImageHandle, /* same old handle */
-            .ImageView = NewImageView,
-            .Aspect = Iav.Aspect,
-        };
-    }
-    return NewIav;
-}
-
-
-void Vkm_Destroy(vkm *Vkm)
-{
-    for (int i = 0; i < VKM_MEMORY_TYPE_COUNT; i++)
-    {
-        vkm_buffer_pool *Pool = &Vkm->BufferPool[i];
-        for (int k = 0; k < Pool->SlotCount; k++)
-        {
-            vkDestroyBuffer(Vkm->Device, Pool->Slot[k].BufferHandle, NULL);
-            vkFreeMemory(Vkm->Device, Pool->Slot[k].MemoryHandle, NULL);
-        }
-    }
-
-    for (int i = 0; i < Vkm->ImageCount; i++)
-    {
-        vkDestroyImage(Vkm->Device, Vkm->Images[i].Handle, NULL);
-    }
-    for (int i = 0; i < Vkm->DeviceMemoryCount; i++)
-    {
-        vkFreeMemory(Vkm->Device, Vkm->DeviceMemory[i].Handle, NULL);
-    }
-}
-
-
-
-
-
-internal const char *Vulkan_PhysicalDeviceTypeToString(VkPhysicalDeviceType type) 
-{
-    switch (type) {
-        case VK_PHYSICAL_DEVICE_TYPE_OTHER:
-            return "Other";
-        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
-            return "Integrated GPU";
-        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
-            return "Discrete GPU";
-        case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
-            return "Virtual GPU";
-        case VK_PHYSICAL_DEVICE_TYPE_CPU:
-            return "CPU";
-        default:
-            return "Unknown Type";
-    }
-}
-
-internal const char *Vulkan_VkResultToString(VkResult Result)
-{
-	switch (Result) 
-    {
-#define CASE(x) case VK_##x: return #x;
-        CASE(SUCCESS)                       CASE(NOT_READY)
-        CASE(TIMEOUT)                       CASE(EVENT_SET)
-        CASE(EVENT_RESET)                   CASE(INCOMPLETE)
-        CASE(ERROR_OUT_OF_HOST_MEMORY)      CASE(ERROR_OUT_OF_DEVICE_MEMORY)
-        CASE(ERROR_INITIALIZATION_FAILED)   CASE(ERROR_DEVICE_LOST)
-        CASE(ERROR_MEMORY_MAP_FAILED)       CASE(ERROR_LAYER_NOT_PRESENT)
-        CASE(ERROR_EXTENSION_NOT_PRESENT)   CASE(ERROR_FEATURE_NOT_PRESENT)
-        CASE(ERROR_INCOMPATIBLE_DRIVER)     CASE(ERROR_TOO_MANY_OBJECTS)
-        CASE(ERROR_FORMAT_NOT_SUPPORTED)    CASE(ERROR_FRAGMENTED_POOL)
-        CASE(ERROR_UNKNOWN)                 CASE(ERROR_OUT_OF_POOL_MEMORY)
-        CASE(ERROR_INVALID_EXTERNAL_HANDLE) CASE(ERROR_FRAGMENTATION)
-        CASE(ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS)
-        CASE(PIPELINE_COMPILE_REQUIRED)      CASE(ERROR_SURFACE_LOST_KHR)
-        CASE(ERROR_NATIVE_WINDOW_IN_USE_KHR) CASE(SUBOPTIMAL_KHR)
-        CASE(ERROR_OUT_OF_DATE_KHR)          CASE(ERROR_INCOMPATIBLE_DISPLAY_KHR)
-        CASE(ERROR_VALIDATION_FAILED_EXT)    CASE(ERROR_INVALID_SHADER_NV)
-#ifdef VK_ENABLE_BETA_EXTENSIONS
-        CASE(ERROR_IMAGE_USAGE_NOT_SUPPORTED_KHR)
-        CASE(ERROR_VIDEO_PICTURE_LAYOUT_NOT_SUPPORTED_KHR)
-        CASE(ERROR_VIDEO_PROFILE_OPERATION_NOT_SUPPORTED_KHR)
-        CASE(ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR)
-        CASE(ERROR_VIDEO_PROFILE_CODEC_NOT_SUPPORTED_KHR)
-        CASE(ERROR_VIDEO_STD_VERSION_NOT_SUPPORTED_KHR)
-#endif
-        CASE(ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT)
-        CASE(ERROR_NOT_PERMITTED_KHR)
-        CASE(ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT)
-        CASE(THREAD_IDLE_KHR)        CASE(THREAD_DONE_KHR)
-        CASE(OPERATION_DEFERRED_KHR) CASE(OPERATION_NOT_DEFERRED_KHR)
-        default: return "unknown";
-#undef CASE
-    }
-}
 
 internal VkBool32 Vulkan_DebugCallback(
     VkDebugReportFlagsEXT Flags, 
@@ -640,7 +101,7 @@ internal VkInstance Vulkan_CreateInstance(VkInstance *Instance, arena_alloc TmpA
         VK_CHECK(vkEnumerateInstanceExtensionProperties(NULL, &Count, NULL));
         if (0 == Count)
         {
-            FATAL("Vulkan: No instance extension available");
+            VK_FATAL("Vulkan: No instance extension available");
         }
 
         VkExtensionProperties *SupportedInstanceExtensions;
@@ -654,7 +115,6 @@ internal VkInstance Vulkan_CreateInstance(VkInstance *Instance, arena_alloc TmpA
         {
             Vulkan_LogLn("\t%s", SupportedInstanceExtensions[i].extensionName);
         }
-        VK_KHR_dynamic_rendering;
     }
 
     /* NOTE: extensions for instance creation */
@@ -818,22 +278,24 @@ internal device_rank Vulkan_CheckDeviceSuitability(
 
     /* check for device level required extensions */
     {
-        u32 DevExtCount = 0;
-        vkEnumerateDeviceExtensionProperties(Device, NULL, &DevExtCount, NULL);
-        VkExtensionProperties *DevExts;
-        Arena_AllocArray(&TmpArena, &DevExts, DevExtCount);
-        vkEnumerateDeviceExtensionProperties(Device, NULL, &DevExtCount, DevExts);
-        bool8 AreRequiredExtensionsSupported = false;
+        u32 DeviceExtensionCount = 0;
+        vkEnumerateDeviceExtensionProperties(Device, NULL, &DeviceExtensionCount, NULL);
+        VkExtensionProperties *DeviceExtensions;
+        Arena_AllocArray(&TmpArena, &DeviceExtensions, DeviceExtensionCount);
+        vkEnumerateDeviceExtensionProperties(Device, NULL, &DeviceExtensionCount, DeviceExtensions);
+
+        bool32 AllExtensionsSupported = true;
         for (u32 i = 0; i < STATIC_ARRAY_SIZE(g_VkDeviceExtensionNames); i++)
         {
-            AreRequiredExtensionsSupported = false;
-            for (u32 k = 0; k < DevExtCount && !AreRequiredExtensionsSupported; k++)
+            bool32 DeviceSupportsThisExtension = false;
+            int Length = strlen(g_VkDeviceExtensionNames[i]);
+            for (u32 k = 0; k < DeviceExtensionCount && !DeviceSupportsThisExtension; k++)
             {
-                AreRequiredExtensionsSupported = 
-                    (strcmp(DevExts[k].extensionName, g_VkDeviceExtensionNames[i]) == 0);
+                DeviceSupportsThisExtension = (strncmp(g_VkDeviceExtensionNames[i], DeviceExtensions[k].extensionName, Length) == 0);
             }
+            AllExtensionsSupported &= DeviceSupportsThisExtension;
         }
-        if (!AreRequiredExtensionsSupported)
+        if (!AllExtensionsSupported)
             return DEVICE_RANK_NONE;
     }
 
@@ -905,7 +367,7 @@ internal vk_physical_devices Vulkan_QueryAndSelectGpu(
 
         if (!SelectedDeviceRank)
         {
-            FATAL("Vulkan: Could not find a suitable device.");
+            VK_FATAL("Vulkan: Could not find a suitable device.");
         }
         //Selected = 1;
         SelectedGpu = (vk_gpu) {
@@ -1515,50 +977,52 @@ internal VkRenderPass Vulkan_CreateRenderPass(VkDevice Device,
 #define COLOR_ATTACHMENT 0
 #define DEPTH_ATTACHMENT 1
 #define COLOR_RESOLVE_ATTACHMENT 2
-        VkAttachmentDescription DepthStencilAttachmentDesc = {
-            .format = DepthBufferFormat,
-            .samples = Samples,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, /* clear after done drawing */
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        /* NOTE: have to specify array size because TCC would not compile without it */
+        VkAttachmentDescription Attachments[ATTACHMENT_COUNT] = { 
+            [COLOR_ATTACHMENT] = {
+                .format = DstImageFormat,
+                .samples = Samples,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, 
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                /* NOTE: set these if we have a stencil buffer */
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            },
+            [DEPTH_ATTACHMENT] = {
+                .format = DepthBufferFormat,
+                .samples = Samples,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, /* clear after done drawing */
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            },
+            [COLOR_RESOLVE_ATTACHMENT] = {
+                /* NOTE: to resolve an MSAA image to be presented, a new attachment is needed */
+                .format = DstImageFormat, 
+                .samples = VK_SAMPLE_COUNT_1_BIT, 
+                .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, 
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            },
         };
+
         VkAttachmentReference DepthStencilAttachmentRef = {
-            .attachment = DEPTH_ATTACHMENT,
+            .attachment = DEPTH_ATTACHMENT,                                 /* index in Attachments */
             .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         };
-
-        VkAttachmentDescription ColorAttachmentDesc = {
-            .format = DstImageFormat,
-            .samples = Samples,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, 
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            /* NOTE: set these if we have a stencil buffer */
-            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        };
         VkAttachmentReference ColorAttachmentRef = {
-            .attachment = COLOR_ATTACHMENT, /* [in pSubpasses] points to the index in pAttachments */
+            .attachment = COLOR_ATTACHMENT,                                 /* index in Attachments */
             .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         };
-
-        /* NOTE: to resolve an MSAA image to be presented, a new attachment is needed */
-        VkAttachmentDescription ColorAttachmentResolveDesc = {
-            .format = DstImageFormat, 
-            .samples = VK_SAMPLE_COUNT_1_BIT, 
-            .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, 
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        };
         VkAttachmentReference ColorAttachmentResolveRef = {
-            .attachment = COLOR_RESOLVE_ATTACHMENT, /* [in pSubpasses] points to the index in pAttachments */
+            .attachment = COLOR_RESOLVE_ATTACHMENT,                         /* index in Attachments */
             .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         };
 
@@ -1579,13 +1043,6 @@ internal VkRenderPass Vulkan_CreateRenderPass(VkDevice Device,
 
             .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
             .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        };
-
-        /* NOTE: have to specify array size because TCC would not compile without it */
-        VkAttachmentDescription Attachments[ATTACHMENT_COUNT] = { 
-            [COLOR_ATTACHMENT] = ColorAttachmentDesc,
-            [DEPTH_ATTACHMENT] = DepthStencilAttachmentDesc,
-            [COLOR_RESOLVE_ATTACHMENT] = ColorAttachmentResolveDesc,
         };
         VkRenderPassCreateInfo CreateInfo = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
@@ -1970,7 +1427,6 @@ internal void Vulkan_RecordCommandBuffer(
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .pInheritanceInfo = NULL, /* NOTE: for secondary command buffers */
     };
-    VkDescriptorSet *CurrentDescriptorSet = Vk->FrameData.DescriptorSetArray + Vk->CurrentFrame;
 
     VK_CHECK(vkBeginCommandBuffer(CmdBuffer, &BeginInfo));
     {
@@ -2040,7 +1496,13 @@ internal void Vulkan_RecordCommandBuffer(
                         VK_INDEX_TYPE_UINT32
                     );
 
-                    vkCmdBindDescriptorSets(CmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Layout, 0, 1, CurrentDescriptorSet, 0, NULL);
+                    VkDescriptorSet *CurrentDescriptorSet = Vk->FrameData.DescriptorSetArray + Vk->CurrentFrame;
+                    vkCmdBindDescriptorSets(CmdBuffer, 
+                        VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                        Pipeline->Layout, 
+                        0, 1, CurrentDescriptorSet, 
+                        0, NULL
+                    );
 
                     /* draw call */
                     u32 IndexCount = Group->Mesh_IndexBuffer_ElementCount;
@@ -2194,17 +1656,28 @@ internal vk_frame_data Vulkan_CreateFrameData(
 
     /* allocate a descriptor set for each frame in flight */
     VkDescriptorSet *DescriptorSets;
+    int DescriptorSetCount = FramesInFlight;
+    Arena_AllocArray(Arena, &DescriptorSets, DescriptorSetCount);
+    Arena_Scope(Arena)
     {
-        Arena_AllocArray(Arena, &DescriptorSets, FramesInFlight);
-        arena_snapshot Snapshot = Arena_SaveSnapshot(Arena);
-
         VkDescriptorSetLayout *DescriptorSetLayouts;
-        Arena_AllocArrayNonZero(Arena, &DescriptorSetLayouts, FramesInFlight);
-        for (int i = 0; i < FramesInFlight; i++)
+        Arena_AllocArrayNonZero(Arena, &DescriptorSetLayouts, DescriptorSetCount);
+        for (int i = 0; i < DescriptorSetCount; i++)
         {
             DescriptorSetLayouts[i] = DescriptorSetLayout;
         }
 
+        VkDescriptorSetAllocateInfo AllocInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = DescriptorPool, 
+            .descriptorSetCount = DescriptorSetCount,
+            .pSetLayouts = DescriptorSetLayouts,
+        };
+        VK_CHECK(vkAllocateDescriptorSets(Device, &AllocInfo, DescriptorSets));
+    }
+
+    /* update descriptor sets */
+    {
         VkDescriptorImageInfo *TextureImageInfos;
         Arena_AllocArray(Arena, &TextureImageInfos, TextureArray->Count);
         for (int i = 0; i < TextureArray->Count; i++)
@@ -2216,14 +1689,7 @@ internal vk_frame_data Vulkan_CreateFrameData(
             };
         }
 
-        VkDescriptorSetAllocateInfo AllocInfo = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool = DescriptorPool, 
-            .descriptorSetCount = FramesInFlight,
-            .pSetLayouts = DescriptorSetLayouts,
-        };
-        VK_CHECK(vkAllocateDescriptorSets(Device, &AllocInfo, DescriptorSets));
-        for (int i = 0; i < FramesInFlight; i++)
+        for (int i = 0; i < DescriptorSetCount; i++)
         {
             VkDescriptorBufferInfo BufferInfo = {
                 .buffer = Vkm_Buffer_GetVkBuffer(&GpuContext->VkMalloc, UniformBufferArray[i]),
@@ -2257,7 +1723,6 @@ internal vk_frame_data Vulkan_CreateFrameData(
             VkCopyDescriptorSet *Copy = NULL;
             vkUpdateDescriptorSets(Device, STATIC_ARRAY_SIZE(Write), Write, 0, Copy);
         }
-        Arena_RestoreSnapshot(Arena, Snapshot);
     }
 
     VkCommandBuffer *CmdBufArray;
@@ -2372,7 +1837,7 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
         }
         else if (Result != VK_SUCCESS && Result != VK_SUBOPTIMAL_KHR)
         {
-            FATAL("Vulkan: Unable to acquire next swapchain image.");
+            VK_FATAL("Vulkan: Unable to acquire next swapchain image.");
         }
     }
     vkResetFences(Device, 1, &Frame->InFlightFenceArray[Vk->CurrentFrame]);
@@ -2428,7 +1893,7 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
         }
         else if (Result != VK_SUCCESS && Result != VK_SUBOPTIMAL_KHR)
         {
-            FATAL("Vulkan: Unable to present swapchain image.");
+            VK_FATAL("Vulkan: Unable to present swapchain image.");
         }
     }
 
@@ -3013,7 +2478,7 @@ void Renderer_CreateGraphicsPipelines(
             const renderer_graphics_pipeline_config *Config = GraphicsPipelineConfigs + i;
             renderer_graphics_pipeline_handle Handle = { i + 1 };
             bool32 EnableMSAA = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_MSAA);
-            UNREACHABLE_IF(!EnableMSAA && MSAASampleCount != RENDERER_NO_MSAA, 
+            UNREACHABLE_IF(!EnableMSAA && MSAASampleCount != 1, 
                 "MSAASampleCount must be 1 if RENDERER_GFXFT_MSAA is not set in GraphicsPipelineConfigs[%d].EnabledGraphicsFeatures",
                 i
             );

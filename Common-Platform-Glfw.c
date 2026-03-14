@@ -28,7 +28,7 @@
 
 #include "Platform-Core.h"
 #include "Common.h"
-#include "Renderer-Vulkan.h"
+#include "Common-Renderer-Vulkan.h"
 
 /* NOTE: application must define app.h and the struct 'app' */
 #include "App.h"
