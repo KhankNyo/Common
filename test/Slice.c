@@ -9,6 +9,7 @@
 
 internal void *Allocate(void *UserData, isize SizeBytes, usize Alignment)
 {
+    (void)UserData;
     void *Ptr = malloc(SizeBytes);
     ASSERT(Ptr, "malloc()");
     return Ptr;
@@ -16,6 +17,7 @@ internal void *Allocate(void *UserData, isize SizeBytes, usize Alignment)
 
 internal void Free(void *UserData, void *Ptr)
 {
+    (void)UserData;
     free(Ptr);
 }
 
@@ -65,6 +67,12 @@ int main(void)
             for (int i = 0; i < 9; i++)
             {
                 SliceBuilder_Push(&BuilderC, i + 1);
+            }
+
+            (void)printfln("====================== Accessing slice builder: ");
+            for (int i = 0; i < 9; i++)
+            {
+                (void)printfln("  %d: %d", i, SliceBuilder_Get(&BuilderC, i));
             }
             SliceBuilder_CopyToSlice(&BuilderC, &C, &Arena);
         }
