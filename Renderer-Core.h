@@ -22,13 +22,13 @@ typedef_struct(renderer_draw_pipeline);
 typedef_struct(renderer_draw_pipeline_group);
 typedef_struct(renderer_scissor);
 
-//#define NEW_API
+#define NEW_API
 
 #if !defined(NEW_API)
 typedef handle(u32) renderer_mesh_handle; 
 typedef handle(u32) renderer_texture_handle;
 #else
-typedef handle(u32) renderer_resource_group_handle;
+typedef handle(void *) renderer_resource_group_handle;
 typedef handle(u32) renderer_sampler_handle;
 typedef handle(void *) renderer_mesh_handle;
 typedef handle(u32) renderer_texture_handle;

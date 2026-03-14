@@ -60,6 +60,7 @@ struct arena__node
 
 force_inline void Arena_Create(arena_alloc *Arena, arena_user_allocator UserAlloc, i64 PoolSizeBytes, u32 Alignment);
 force_inline void Arena_Destroy(arena_alloc *Arena);
+force_inline void Arena_Reset(arena_alloc *Arena);
 header_function isize Arena_GetAllocatedSize(const arena_alloc *Arena);
 header_function isize Arena_GetAllocatedCapacity(const arena_alloc *Arena);
 void *Arena_Alloc(arena_alloc *Arena, i64 SizeBytes);
@@ -141,6 +142,13 @@ force_inline arena__node *Arena__NewNode(arena_alloc *Arena, arena__node *Next, 
     return Node;
 }
 
+force_inline void Arena_Reset(arena_alloc *Arena)
+{
+    Arena->Curr = Arena->Begin;
+    i64 TotalSizeBytes = Arena_GetNodeCapacity(Arena->Curr) + sizeof(*Arena->Curr);
+    Arena__ResetNode(Arena->Curr, Arena->Curr->Next, TotalSizeBytes);
+}
+
 force_inline void Arena_Create(arena_alloc *Arena, arena_user_allocator UserAlloc, i64 PoolSizeBytes, u32 Alignment)
 {
     ASSERT(PoolSizeBytes > 0);
@@ -173,11 +181,13 @@ header_function isize Arena_GetAllocatedSize(const arena_alloc *Arena)
 {
     isize BytesAllocated = 0;
     arena__node *i = Arena->Begin;
-    while (i)
+    while (i && i != Arena->Curr)
     {
         BytesAllocated += Arena_GetNodeCapacity(i) - Arena_GetNodeRemainingSize(i);
         i = i->Next;
     }
+    if (i)
+        BytesAllocated += Arena_GetNodeCapacity(i) - Arena_GetNodeRemainingSize(i);
     return BytesAllocated;
 }
 

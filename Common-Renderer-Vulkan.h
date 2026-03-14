@@ -5,6 +5,7 @@
 #include "Memory.h"
 #include "Renderer-Core.h"
 #include "Profiler.h"
+#include "Slice.h"
 
 #include "Common-Vulkan.h"
 #include "Common-Renderer-Vulkan-VkMalloc.h"
@@ -42,6 +43,9 @@ typedef_struct(vk_swapchain_image);
 typedef_struct(vk_color_resource);
 typedef_struct(vk_mesh);
 typedef_struct(vk_uniform_buffer);
+
+typedef slice_builder_typed(VkSampler, 64) vk_sampler_list_array;
+typedef_struct(vk_resource_group);
 
 
 struct vk_mesh
@@ -176,11 +180,11 @@ struct renderer
 #ifdef NEW_API
     struct vk_resource_group
     {
+        vk_resource_group *Next, *Prev;
         vkm GpuAllocator;
-        free_list_alloc CpuAllocator;
-    } *ResourceGroups;
-    u32 *ResourceGroupReference;
-    int ResourceGroupCount, ResourceGroupCapacity;
+        arena_alloc CpuAllocator;
+        vk_sampler_list_array Samplers;
+    } *ResourceGroupHead, *ResourceGroupFreeHead;
 
     u32 ResourceUpdateID;
 #else

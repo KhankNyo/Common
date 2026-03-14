@@ -2192,17 +2192,37 @@ void Renderer_UpdateUniformBuffer(renderer *Vk, const void *Data, isize SizeByte
 
 #ifdef NEW_API
 
+internal void Vulkan_ResetResourceGroup(renderer *Vk, vk_resource_group *ResourceGroup)
+{
+    /* NOTE: Might not need to wait for the device to become idle? */
+    VkDevice Device = Vulkan_GetDevice(Vk);
+    vkDeviceWaitIdle(Device);
+
+    SliceBuilder_ForEach(&ResourceGroup->Samplers, i)
+    {
+        vkDestroySampler(Device, *i, NULL);
+    }
+    SliceBuilder_Reset(&ResourceGroup->Samplers);
+    Vkm_Reset(&ResourceGroup->GpuAllocator);
+    Arena_Reset(&ResourceGroup->CpuAllocator);
+}
+
 renderer_resource_group_handle Renderer_CreateResourceGroup(
     renderer *Vk, 
     const renderer_resource_group_config *Config
 ) {
-    vkm GpuAllocator;
+    vk_resource_group *ResourceGroup = NULL;
+    if (!Vk->ResourceGroupFreeHead)
     {
+        /* create new group */
+        ResourceGroup = Arena_Alloc(&Vk->Arena, sizeof *ResourceGroup);
+
         isize BufferPoolSizeBytes[] = {
             [VKM_MEMORY_TYPE_CPU_VISIBLE] = Config->CpuBufferPoolSizeBytes,
             [VKM_MEMORY_TYPE_GPU_LOCAL] = Config->GpuBufferPoolSizeBytes,
         };
-        Vkm_Create(&GpuAllocator,
+
+        Vkm_Create(&ResourceGroup->GpuAllocator,
             Vulkan_GetDevice(Vk),
             Vulkan_GetPhysicalDevice(Vk),
             Config->ImagePoolSizeBytes,
@@ -2210,10 +2230,62 @@ renderer_resource_group_handle Renderer_CreateResourceGroup(
             Vk->GpuBufferUsageFlags,
             Vk->GpuMemoryProperties
         );
+        Arena_Create(&ResourceGroup->CpuAllocator, Vk->Arena.UserAlloc, Config->CpuBufferPoolSizeBytes, 16);
+        SliceBuilder_Create(&ResourceGroup->Samplers, &ResourceGroup->CpuAllocator);
+    }
+    else
+    {
+        /* take from free list */
+        ResourceGroup = Vk->ResourceGroupFreeHead;
+        Vulkan_ResetResourceGroup(Vk, ResourceGroup);
+        Vk->ResourceGroupFreeHead = ResourceGroup->Next;
     }
 
-    arena_alloc CpuAllocator;
-    Arena_Create(&CpuAllocator, Vk->Arena.UserAlloc, Config->CpuBufferPoolSizeBytes, 16);
+    /* link list */
+    if (Vk->ResourceGroupHead == NULL)
+    {
+        Vk->ResourceGroupHead = ResourceGroup;
+    }
+    else
+    {
+        vk_resource_group *Head = Vk->ResourceGroupHead;
+
+        ResourceGroup->Next = Head;
+        Head->Prev = ResourceGroup;
+        Vk->ResourceGroupHead = ResourceGroup;
+    }
+    renderer_resource_group_handle Handle = { ResourceGroup };
+    return Handle;
+}
+
+void Renderer_DestroyResourceGroup(
+    renderer *Vk, 
+    renderer_resource_group_handle ResourceGroupHandle
+) {
+    vk_resource_group *ResourceGroup = ResourceGroupHandle.Value;
+    vk_resource_group *Next = ResourceGroup->Next;
+    vk_resource_group *Prev = ResourceGroup->Prev;
+    if (Prev)
+    {
+        Prev->Next = Next;
+    }
+    else 
+    {
+        Vk->ResourceGroupHead = Next;
+    }
+    if (Next)
+    {
+        Next->Prev = Prev;
+    }
+
+    vk_resource_group *FreeHead = Vk->ResourceGroupFreeHead;
+    ResourceGroup->Next = FreeHead;
+    ResourceGroup->Prev = NULL;
+    if (FreeHead)
+    {
+        FreeHead->Prev = ResourceGroup;
+    }
+    Vk->ResourceGroupFreeHead = ResourceGroup;
 }
 
 void Renderer_CommitResources(

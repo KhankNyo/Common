@@ -206,6 +206,30 @@ void Vkm_Destroy(vkm *Vkm)
     }
 }
 
+void Vkm_Reset(vkm *Vkm)
+{
+    for (int i = 0; i < VKM_MEMORY_TYPE_COUNT; i++)
+    {
+        vkm_buffer_pool *Pool = &Vkm->BufferPool[i];
+        for (int k = 0; k < Pool->SlotCount; k++)
+        {
+            Pool->Slot[k].SizeBytesRemain = Pool->Slot[k].Capacity;
+        }
+    }
+
+    /* NOTE: must deallocate all images since we can't use them anymore */
+    for (int i = 0; i < Vkm->ImageCount; i++)
+    {
+        vkDestroyImage(Vkm->Device, Vkm->Images[i].Handle, NULL);
+    }
+    for (int i = 0; i < Vkm->DeviceMemoryCount; i++)
+    {
+        vkFreeMemory(Vkm->Device, Vkm->DeviceMemory[i].Handle, NULL);
+    }
+    Vkm->ImageCount = 0;
+    Vkm->DeviceMemoryCount = 0;
+}
+
 
 
 
@@ -244,8 +268,6 @@ vkm_buffer Vkm_CreateBuffer(vkm *Vkm, vkm_memory_type MemoryType, isize BufferSi
     {
         vkm_buffer_pool_slot *CurrSlot = &Pool->Slot[i];
 
-        /* TODO: this is currently an arena-style allocator, 
-         * maybe modify Vkm__BufferFits() so that it's more like a pool allocator */
         if (Vkm__BufferFits(CurrSlot, BufferSizeBytes))
         {
             /* NOTE: alignment is already taken care of when pool is allocated */

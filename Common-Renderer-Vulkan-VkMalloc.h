@@ -127,6 +127,7 @@ void Vkm_Create(
     VkMemoryPropertyFlags DefaultMemoryProperties[VKM_MEMORY_TYPE_COUNT]
 );
 void Vkm_Destroy(vkm *Vkm);
+void Vkm_Reset(vkm *Vkm);
 
 vkm_buffer Vkm_CreateBuffer(vkm *Vkm, vkm_memory_type MemoryType, isize BufferSizeBytes);
 /* NOTE: defaults:
