@@ -11,6 +11,7 @@ extern "C" {
 #include <string.h> /* memcpy */
 
 
+/* TODO: documentation on SliceBuilder_Get(), SliceBuilder_GetTopPtr(), SliceBuilder_GetCount() */
 
 /*
     example usage: 
@@ -107,20 +108,16 @@ typedef_struct(slice_builder__node_header);
         sizeof((p_slice_builder)->Last[0].Pool))\
     )->Pool[(index) % SliceBuilder_GetPoolCapacity(p_slice_builder)]
 
-#define SliceBuilder_ForEach(p_slice_builder, iterator_name) \
-    for (typeof(SLICE_BUILDER__POOL_ELEM_TYPE(p_slice_builder)) *iterator_name = \
-        SliceBuilder__IteratorBegin((p_slice_builder)->First); \
-        !SliceBuilder__IteratorIsAtEnd(\
-            (p_slice_builder)->First, \
-            iterator_name, \
-            SliceBuilder_GetPoolCapacity(p_slice_builder), \
-            sizeof(SLICE_BUILDER__POOL_ELEM_TYPE(p_slice_builder)));\
-        SliceBuilder__IteratorNext(\
-            (p_slice_builder)->First, \
-            iterator_name, \
-            SliceBuilder_GetPoolCapacity(p_slice_builder), \
-            sizeof(SLICE_BUILDER__POOL_ELEM_TYPE(p_slice_builder)))\
-        )
+#define SliceBuilder_GetCount(p_slice_builder) \
+    ((p_slice_builder)->BlockCount * SliceBuilder_GetPoolCapacity(p_slice_builder) \
+    + ((p_slice_builder)->Last? (p_slice_builder)->Last->Header.Count : 0))
+
+/* NOTE: it is ok to take the address of an element in SliceBuilder */
+#define SliceBuilder_GetTopPtr(p_slice_builder) (\
+        (p_slice_builder)->Last ?\
+            &(p_slice_builder)->Last->Pool[(p_slice_builder)->Last->Header.Count - 1]\
+            : NULL\
+    )
 
 #define SliceBuilder_Push(p_slice_builder, ...) do { \
     typeof(p_slice_builder) builder_ = p_slice_builder;\
@@ -225,41 +222,6 @@ header_function slice_builder__node_header *SliceBuilder__GetHeader(slice_builde
     }
     ASSERT(Node);
     return Node;
-}
-
-header_function void *SliceBuilder__IteratorBegin(slice_builder__node_header *Header)
-{
-    if (!Header)
-        return NULL;
-    return (Header + 1);
-}
-
-header_function bool32 SliceBuilder__IteratorIsAtEnd(slice_builder__node_header *Header, void *Iterator, isize PoolCapacity, isize ElementSizeBytes)
-{
-    if (!Header || !Iterator)
-        return true;
-
-    isize Size = MINIMUM(PoolCapacity, Header->Count);
-    const u8 *End = (u8 *)(Header + 1) + Size * ElementSizeBytes;
-    u8 *NextIterPtr = (u8 *)Iterator + ElementSizeBytes;
-    return NextIterPtr >= End;
-}
-
-header_function void *SliceBuilder__IteratorNext(slice_builder__node_header *Header, void *Iterator, isize PoolCapacity, isize ElementSizeBytes)
-{
-    ASSERT(Iterator);
-    ASSERT(Header);
-
-    isize Size = MINIMUM(PoolCapacity, Header->Count);
-    const u8 *End = (u8 *)(Header + 1) + Size * ElementSizeBytes;
-    u8 *NextIterPtr = (u8 *)Iterator + ElementSizeBytes;
-    if (NextIterPtr >= End)
-    {
-        if (Header->Count == PoolCapacity && Header->Next)
-            return (Header->Next + 1);
-        return NULL;
-    }
-    return NextIterPtr;
 }
 
 

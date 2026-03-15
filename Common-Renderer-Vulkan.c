@@ -1544,59 +1544,6 @@ internal void Vulkan_RecordCommandBuffer(
     VK_CHECK(vkEndCommandBuffer(CmdBuffer));
 }
 
-internal void Vulkan_TransferDataToGpuLocalMemory(
-    const vk_gpu_context *GpuContext, VkCommandPool CommandPool, 
-    vkm_buffer GpuLocalDst, const void *Src, isize SrcSizeBytes
-) {
-    /* because the staging buffer has a fixed size, we'll transfer the data by blocks.
-     * TODO: use a dedicated transfer queue */
-    Profiler_Scope(GpuContext->Profiler, "Vulkan_TransferDataToGpuLocalMemory()")
-    {
-        const vkm *Vkm = &GpuContext->VkMalloc;
-        VkBuffer DstBuffer = Vkm_Buffer_GetVkBuffer(Vkm, GpuLocalDst);
-        vkm_buffer StagingBuffer = GpuContext->StagingBuffer;
-        VkBuffer StagingBufferHandle = Vkm_Buffer_GetVkBuffer(Vkm, StagingBuffer);
-        void *StagingBufferPtr = GpuContext->StagingBufferPtr;
-        i64 StagingBufferSizeBytes = Vkm_Buffer_GetSizeBytes(StagingBuffer);
-
-        const u8 *SrcPtr = Src;
-        i64 TransferedByteCount = 0;
-        Profiler_Scope(GpuContext->Profiler, "Copy Loop")
-        {
-            while (SrcSizeBytes > 0)
-            {
-                /* copy to staging */
-                i64 TransferSize = MINIMUM(StagingBufferSizeBytes, SrcSizeBytes);
-                Profiler_Scope(GpuContext->Profiler, "memcpy()")
-                    memcpy(StagingBufferPtr, SrcPtr, TransferSize);
-
-                /* copy to dst */
-                i64 DstOffset = Vkm_Buffer_GetOffsetBytes(GpuLocalDst);
-                {
-                    VkCommandBuffer CmdBuf; 
-                    Profiler_Scope(GpuContext->Profiler, "Vulkan_BeginSingleTimeCommandBuffer()")
-                    {
-                        CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
-                    }
-                    VkBufferCopy Region = {
-                        .dstOffset = DstOffset + TransferedByteCount,
-                        .srcOffset = 0,
-                        .size = TransferSize,
-                    };
-                    vkCmdCopyBuffer(CmdBuf, StagingBufferHandle, DstBuffer, 1, &Region);
-                    Profiler_Scope(GpuContext->Profiler, "Vulkan_EndSingleTimeCommandBuffer()")
-                    {
-                        Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
-                    }
-                }
-
-                SrcPtr += TransferSize;
-                SrcSizeBytes -= TransferSize;
-                TransferedByteCount += TransferSize;
-            }
-        }
-    }
-}
 
 
 internal VkDescriptorSetLayout Vulkan_CreateDescriptorSetLayout(VkDevice Device, int UniformBufferDescriptorCount, int ImageSamplerDescriptorCount)
@@ -1797,7 +1744,8 @@ internal vk_frame_data Vulkan_CreateFrameData(
 /* NOTE: src buffer must have the same format as DstFormat */
 internal void Vulkan_CopyBufferToImage(
     const vk_gpu_context *GpuContext, VkCommandPool CommandPool, 
-    VkBuffer Src, VkImage Dst,
+    VkBuffer Src, u32 SrcOffset, 
+    VkImage Dst,
     u32 Width, u32 Height, 
     VkImageLayout DstLayout
 ) {
@@ -1805,7 +1753,7 @@ internal void Vulkan_CopyBufferToImage(
     VkBufferImageCopy Region = {
         .bufferImageHeight = 0, 
         .bufferRowLength = 0,
-        .bufferOffset = 0,
+        .bufferOffset = SrcOffset,
 
         .imageOffset = { 0 },
         .imageExtent = {
@@ -2131,14 +2079,8 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
             Vk->GpuMemoryProperties
         );
 
-        vkm_buffer StagingBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_CPU_VISIBLE, 64*MB);
-        void *StagingBufferPtr;
-        {
-            StagingBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_CPU_VISIBLE, 64*MB);
-            StagingBufferPtr = Vkm_Buffer_GetMappedMemory(&GpuContext->VkMalloc, StagingBuffer);
-        }
-        GpuContext->StagingBuffer = StagingBuffer;
-        GpuContext->StagingBufferPtr = StagingBufferPtr;
+        GpuContext->StagingBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_CPU_VISIBLE, 64*MB);
+        GpuContext->StagingBufferPtr = Vkm_Buffer_GetMappedMemory(&GpuContext->VkMalloc, GpuContext->StagingBuffer);
     }
 
 
@@ -2198,11 +2140,23 @@ internal void Vulkan_ResetResourceGroup(renderer *Vk, vk_resource_group *Resourc
     VkDevice Device = Vulkan_GetDevice(Vk);
     vkDeviceWaitIdle(Device);
 
-    SliceBuilder_ForEach(&ResourceGroup->Samplers, i)
     {
-        vkDestroySampler(Device, *i, NULL);
+        /* destroy all samplers */
+        int Count = SliceBuilder_GetCount(&ResourceGroup->Samplers);
+        for (int i = 0; i < Count; i++)
+        {
+            vkDestroySampler(Device, SliceBuilder_Get(&ResourceGroup->Samplers, i), NULL);
+        }
+        SliceBuilder_Reset(&ResourceGroup->Samplers);
+
+        /* destroy all image views */
+        Count = SliceBuilder_GetCount(&ResourceGroup->Textures);
+        for (int i = 0; i < Count; i++)
+        {
+            vkDestroyImageView(Device, SliceBuilder_Get(&ResourceGroup->Textures, i).ImageView, NULL);
+        }
+        SliceBuilder_Reset(&ResourceGroup->Textures);
     }
-    SliceBuilder_Reset(&ResourceGroup->Samplers);
     Vkm_Reset(&ResourceGroup->GpuAllocator);
     Arena_Reset(&ResourceGroup->CpuAllocator);
 }
@@ -2237,7 +2191,6 @@ renderer_resource_group_handle Renderer_CreateResourceGroup(
     {
         /* take from free list */
         ResourceGroup = Vk->ResourceGroupFreeHead;
-        Vulkan_ResetResourceGroup(Vk, ResourceGroup);
         Vk->ResourceGroupFreeHead = ResourceGroup->Next;
     }
 
@@ -2286,17 +2239,323 @@ void Renderer_DestroyResourceGroup(
         FreeHead->Prev = ResourceGroup;
     }
     Vk->ResourceGroupFreeHead = ResourceGroup;
+
+    /* reset it */
+    Vulkan_ResetResourceGroup(Vk, ResourceGroup);
 }
 
 void Renderer_CommitResources(
     renderer *Vk, 
     renderer_resource_group_handle ResourceGroup
 ) {
+    /* TODO: commit resources */
+    RUNTIME_TODO("Update descriptor set at render time for %s", __func__);
     /* NOTE: we don't update resources here because the GPU might still be using them, defer the update to render time. */
     Vk->ResourceUpdateID++;
 }
 
+
+
+internal VkFilter Vulkan_RendererFilterTypeToVkFilter(renderer_filter_type Type)
+{
+    switch (Type)
+    {
+    case RENDERER_FILTER_NEAREST:
+        return VK_FILTER_NEAREST;
+    case RENDERER_FILTER_LINEAR:
+        return VK_FILTER_LINEAR;
+    }
+    UNREACHABLE();
+}
+
+
+renderer_sampler_handle Renderer_CreateSampler(
+    renderer *Vk, 
+    renderer_resource_group_handle ResourceGroupHandle,
+    const renderer_sampler_config *TextureSamplerConfig
+) {
+    VkDevice Device = Vulkan_GetDevice(Vk);
+
+    VkSampler Sampler;
+    {
+        VkBool32 AnisotropyFilteringSupported = VK_FALSE;
+        float AnisotropyFilteringMax = 1.0f;
+        {
+            VkPhysicalDevice Gpu = Vulkan_GetPhysicalDevice(Vk);
+            VkPhysicalDeviceFeatures Features;
+            VkPhysicalDeviceProperties Properties;
+            vkGetPhysicalDeviceFeatures(Gpu, &Features);
+            vkGetPhysicalDeviceProperties(Gpu, &Properties);
+
+            AnisotropyFilteringSupported = Features.samplerAnisotropy;
+            AnisotropyFilteringMax = Properties.limits.maxSamplerAnisotropy;
+        }
+
+        UNREACHABLE_IF(
+            !AnisotropyFilteringSupported && TextureSamplerConfig->EnableAnisotropyFiltering, 
+            "TODO: query anisotrophy support"
+        );
+
+        VkSamplerCreateInfo SamplerCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            /* bilinear filtering:
+             *  minification:  texels are bigger than screen pixels 
+             *  magnification: screen pixels are bigger than texels */
+            .magFilter = Vulkan_RendererFilterTypeToVkFilter(TextureSamplerConfig->MagFilter),
+            .minFilter = Vulkan_RendererFilterTypeToVkFilter(TextureSamplerConfig->MinFilter),
+            /* for u,v,(w) coords that are outside of the texture (default 0..1) */
+            .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            /* when sampling out of bound for VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER */
+            .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+            .unnormalizedCoordinates = VK_FALSE,
+            /* anisotrophy */
+            .anisotropyEnable = TextureSamplerConfig->EnableAnisotropyFiltering,
+            .maxAnisotropy = AnisotropyFilteringMax,
+            /* for filtering */
+            .compareEnable = VK_FALSE,
+            .compareOp = VK_COMPARE_OP_ALWAYS,
+            /* mipmapping */
+            .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+            .mipLodBias = 0.0f,
+            .minLod = 0.0f,
+            .maxLod = VK_LOD_CLAMP_NONE,
+        };
+        VK_CHECK(vkCreateSampler(
+            Device,
+            &SamplerCreateInfo,
+            NULL, 
+            &Sampler
+        ));
+    }
+
+    vk_resource_group *ResourceGroup = ResourceGroupHandle.Value;
+    ASSERT(ResourceGroupPtr, "TODO: use global resource group when handle is null?");
+
+    /* save the sampler and return it */
+    SliceBuilder_Push(&ResourceGroup->Samplers, Sampler);
+    VkSampler *SamplerPtr = SliceBuilder_GetTopPtr(&ResourceGroup->Samplers);
+    ASSERT(SamplerPtr);
+    renderer_sampler_handle Handle = {
+        .Value = *SamplerPtr,
+    };
+    return Handle;
+}
+
+
+internal void Vulkan_TransferDataToGpuLocalMemory(
+    renderer *Vk, 
+    VkCommandPool CommandPool, 
+    const vk_resource_group *DstOwner, vkm_buffer Dst, 
+    const void *Src, isize SrcSizeBytes
+) {
+    /* TODO: use a dedicated transfer queue */
+    /* TODO: better way to do staging buffer, having to create an entire allocator just to use a staging buffer is ridiculous */
+    vkm Tmp;
+    const vk_gpu_context *GpuContext = &Vk->GpuContext;
+    Vkm_Create(&Tmp, GpuContext->Device, GpuContext->PhysicalDevice, 0, (i64[2]){0}, Vk->GpuBufferUsageFlags, Vk->GpuMemoryProperties);
+    {
+        vkm_buffer StagingBuffer = Vkm_CreateBuffer(&Tmp, VKM_MEMORY_TYPE_CPU_VISIBLE, SrcSizeBytes);
+        void *StagingBufferPtr = Vkm_Buffer_GetMappedMemory(&Tmp, StagingBuffer);
+        memcpy(StagingBufferPtr, Src, SrcSizeBytes);
+
+        VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
+        {
+            vkCmdCopyBuffer(CmdBuf, 
+                Vkm_Buffer_GetVkBuffer(&DstOwner->GpuAllocator, Dst),
+                Vkm_Buffer_GetVkBuffer(&Tmp, StagingBuffer),
+                1, &(VkBufferCopy) {
+                    .dstOffset = Vkm_Buffer_GetOffsetBytes(Dst),
+                    .srcOffset = Vkm_Buffer_GetOffsetBytes(StagingBuffer),
+                    .size = SrcSizeBytes,
+                }
+            );
+        }
+        Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
+    }
+    Vkm_Destroy(&Tmp);
+}
+
+renderer_texture_handle Renderer_CreateStaticTexture(
+    renderer *Vk,
+    renderer_resource_group_handle ResourceGroupHandle,
+    const renderer_texture_config *TextureConfig,
+    const void *ImageData
+) {
+    vk_resource_group *ResourceGroup = ResourceGroupHandle.Value;
+    VkFormat ImageFormat = Vulkan_GetVkFormat(TextureConfig->Format);
+    VkDevice Device = Vulkan_GetDevice(Vk);
+
+    vkm_image_handle TextureImageHandle;
+    {
+        vkm Tmp;
+        Vkm_Create(&Tmp, Device, Vulkan_GetPhysicalDevice(Vk), 0, (i64[2]){0}, Vk->GpuBufferUsageFlags, Vk->GpuMemoryProperties);
+
+        vk_gpu_context *GpuContext = &Vk->GpuContext;
+        VkCommandPool CommandPool = Vk->CommandPool;
+
+        /* copy image data to staging buffer */
+        isize ImageSizeBytes = TextureConfig->Width * TextureConfig->Height * sizeof(u32);
+        vkm_buffer StagingBuffer = Vkm_CreateBuffer(&Tmp, VKM_MEMORY_TYPE_CPU_VISIBLE, ImageSizeBytes);
+        memcpy(Vkm_Buffer_GetMappedMemory(&Tmp, StagingBuffer), ImageData, ImageSizeBytes);
+
+        TextureImageHandle = Vkm_CreateImage(
+            &ResourceGroup->GpuAllocator, 
+            TextureConfig->Width, 
+            TextureConfig->Height, 
+            TextureConfig->MipLevels,
+            VK_SAMPLE_COUNT_1_BIT,
+            ImageFormat,
+            VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT
+        );
+
+        /* copy image data to gpu memory */
+        VkImage Image = Vkm_Image_Get(&ResourceGroup->GpuAllocator, TextureImageHandle).Handle;
+        Vulkan_TransitionImageLayout(GpuContext, CommandPool,
+            Image, 
+            ImageFormat, 
+            VK_IMAGE_LAYOUT_UNDEFINED, 
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
+            TextureConfig->MipLevels
+        );
+        Vulkan_CopyBufferToImage(GpuContext, CommandPool,
+            Vkm_Buffer_GetVkBuffer(&GpuContext->VkMalloc, StagingBuffer),
+            Vkm_Buffer_GetOffsetBytes(StagingBuffer),
+            Image, TextureConfig->Width, TextureConfig->Height, 
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+        );
+#if 1
+        Vulkan_TransitionImageLayout(GpuContext, CommandPool,
+            Image, 
+            ImageFormat,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 
+            TextureConfig->MipLevels
+        );
+        /* to shut the compiler up */
+        (void)Vulkan_GenerateMipmap;
 #else
+        /* to shut the compiler up */
+        (void)Vulkan_TransitionImageLayout;
+        Vulkan_GenerateMipmap(GpuContext, CommandPool, 
+            ImageFormat, Image, TextureConfig->Width, TextureConfig->Height, MipLevels
+        );
+#endif
+        Vkm_Destroy(&Tmp);
+    }
+
+    VkImageView TextureImageView = Vulkan_CreateImageView(Device, 
+        Vkm_Image_Get(&ResourceGroup->GpuAllocator, 
+        TextureImageHandle).Handle, 
+        ImageFormat, 
+        VK_IMAGE_ASPECT_COLOR_BIT, 
+        TextureConfig->MipLevels
+    );
+
+    SliceBuilder_Push(&ResourceGroup->Textures, (vk_texture) {
+        .Image = TextureImageHandle,
+        .ImageView = TextureImageView,
+        .Sampler = TextureConfig->SamplerHandle.Value,
+    });
+    int Index = SliceBuilder_GetCount(&ResourceGroup->Textures) - 1;
+    ASSERT(Index >= 0);
+    renderer_texture_handle Handle = { Index };
+    return Handle;
+}
+
+renderer_mesh_handle Renderer_CreateStaticMesh(
+    renderer *Vk,
+    renderer_resource_group_handle ResourceGroupHandle,
+    const renderer_mesh_config *MeshConfig,
+    const void *VertexBufferPtr,
+    const u32 *IndexBufferPtr
+) {
+    vk_resource_group *ResourceGroup = ResourceGroupHandle.Value;
+    ASSERT(ResourceGroup, "TODO: use global resource group when handle is null?");
+
+    isize VertexBufferSizeBytes = MeshConfig->VertexCount * MeshConfig->VertexBufferElementSizeBytes;
+    isize IndexBufferSizeBytes = MeshConfig->IndexCount * sizeof(u32);
+    /*
+     * So apparently, the VkBufferUsageFlags is just a suggestion, 
+     * but for certain vkCmd* to work, you'd need to just *HAVE* the appropriate flags
+     *
+     * eg: vkCmdBindIndexBuffers needs VK_BUFFER_USAGE_INDEX_BUFFER_BIT, though it can have other flags, even VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+     * */
+    vk_mesh *MeshPtr = Arena_AllocNonZero(&ResourceGroup->CpuAllocator, sizeof(*MeshPtr));
+    *MeshPtr = (vk_mesh) {
+        .IndexBufferSizeBytes = IndexBufferSizeBytes,
+        .VertexBufferSizeBytes = VertexBufferSizeBytes,
+        .VertexCount = MeshConfig->VertexCount,
+        .IndexCount = MeshConfig->IndexCount,
+
+        .VertexBuffer = Vkm_CreateBuffer(&ResourceGroup->GpuAllocator, VKM_MEMORY_TYPE_GPU_LOCAL, VertexBufferSizeBytes),
+        .IndexBuffer = Vkm_CreateBuffer(&ResourceGroup->GpuAllocator, VKM_MEMORY_TYPE_GPU_LOCAL, IndexBufferSizeBytes),
+    };
+    Vulkan_TransferDataToGpuLocalMemory(Vk, Vk->CommandPool, ResourceGroup, MeshPtr->VertexBuffer, VertexBufferPtr, VertexBufferSizeBytes);
+    Vulkan_TransferDataToGpuLocalMemory(Vk, Vk->CommandPool, ResourceGroup, MeshPtr->IndexBuffer, IndexBufferPtr, IndexBufferSizeBytes);
+    return (renderer_mesh_handle) { MeshPtr };
+}
+
+
+
+#else
+
+
+internal void Vulkan_TransferDataToGpuLocalMemory(
+    const vk_gpu_context *GpuContext, VkCommandPool CommandPool, 
+    vkm_buffer GpuLocalDst, const void *Src, isize SrcSizeBytes
+) {
+    /* because the staging buffer has a fixed size, we'll transfer the data by blocks.
+     * TODO: use a dedicated transfer queue */
+    Profiler_Scope(GpuContext->Profiler, "Vulkan_TransferDataToGpuLocalMemory()")
+    {
+        const vkm *Vkm = &GpuContext->VkMalloc;
+        VkBuffer DstBuffer = Vkm_Buffer_GetVkBuffer(Vkm, GpuLocalDst);
+        vkm_buffer StagingBuffer = GpuContext->StagingBuffer;
+        VkBuffer StagingBufferHandle = Vkm_Buffer_GetVkBuffer(Vkm, StagingBuffer);
+        void *StagingBufferPtr = GpuContext->StagingBufferPtr;
+        i64 StagingBufferSizeBytes = Vkm_Buffer_GetSizeBytes(StagingBuffer);
+
+        const u8 *SrcPtr = Src;
+        i64 TransferedByteCount = 0;
+        Profiler_Scope(GpuContext->Profiler, "Copy Loop")
+        {
+            while (SrcSizeBytes > 0)
+            {
+                /* copy to staging */
+                i64 TransferSize = MINIMUM(StagingBufferSizeBytes, SrcSizeBytes);
+                Profiler_Scope(GpuContext->Profiler, "memcpy()")
+                    memcpy(StagingBufferPtr, SrcPtr, TransferSize);
+
+                /* copy to dst */
+                i64 DstOffset = Vkm_Buffer_GetOffsetBytes(GpuLocalDst);
+                {
+                    VkCommandBuffer CmdBuf; 
+                    Profiler_Scope(GpuContext->Profiler, "Vulkan_BeginSingleTimeCommandBuffer()")
+                    {
+                        CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
+                    }
+                    VkBufferCopy Region = {
+                        .dstOffset = DstOffset + TransferedByteCount,
+                        .srcOffset = Vkm_Buffer_GetOffsetBytes(StagingBuffer),
+                        .size = TransferSize,
+                    };
+                    vkCmdCopyBuffer(CmdBuf, StagingBufferHandle, DstBuffer, 1, &Region);
+                    Profiler_Scope(GpuContext->Profiler, "Vulkan_EndSingleTimeCommandBuffer()")
+                    {
+                        Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
+                    }
+                }
+
+                SrcPtr += TransferSize;
+                SrcSizeBytes -= TransferSize;
+                TransferedByteCount += TransferSize;
+            }
+        }
+    }
+}
 
 renderer_mesh_handle Renderer_UploadStaticMesh(
     renderer *Vk, 
@@ -2416,6 +2675,7 @@ renderer_texture_handle Renderer_UploadTexture(
         );
         Vulkan_CopyBufferToImage(GpuContext, CommandPool,
             Vkm_Buffer_GetVkBuffer(&GpuContext->VkMalloc, StagingBuffer),
+            Vkm_Buffer_GetOffsetBytes(StagingBuffer),
             Image, Width, Height, 
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
         );

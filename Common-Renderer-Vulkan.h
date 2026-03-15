@@ -44,7 +44,25 @@ typedef_struct(vk_color_resource);
 typedef_struct(vk_mesh);
 typedef_struct(vk_uniform_buffer);
 
+
+#ifdef NEW_API
+struct vk_texture
+{
+    vkm_image_handle Image;
+    VkImageView ImageView;
+    VkSampler Sampler;
+};
+#else
+struct vk_texture
+{
+    vkm_image_handle Image;
+    VkImageView ImageView;
+    VkSampler Sampler;
+};
+#endif
+
 typedef slice_builder_typed(VkSampler, 64) vk_sampler_list_array;
+typedef slice_builder_typed(vk_texture, 64) vk_texture_list_array;
 typedef_struct(vk_resource_group);
 
 
@@ -87,12 +105,6 @@ struct vk_swapchain_support_config
     VkSurfaceCapabilitiesKHR Capabilities;
     vk_surface_format_array Formats;
     vk_present_mode_array PresentModes;
-};
-struct vk_texture
-{
-    vkm_image_handle Image;
-    VkImageView ImageView;
-    VkSampler Sampler;
 };
 struct vk_graphics_pipeline
 {
@@ -183,7 +195,10 @@ struct renderer
         vk_resource_group *Next, *Prev;
         vkm GpuAllocator;
         arena_alloc CpuAllocator;
+        /* samplers and textures are owned by the gpu allocator */
         vk_sampler_list_array Samplers;
+        vk_texture_list_array Textures;
+        /* vk_mesh objects are owned by the CpuAllocator */
     } *ResourceGroupHead, *ResourceGroupFreeHead;
 
     u32 ResourceUpdateID;

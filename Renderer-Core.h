@@ -22,14 +22,14 @@ typedef_struct(renderer_draw_pipeline);
 typedef_struct(renderer_draw_pipeline_group);
 typedef_struct(renderer_scissor);
 
-#define NEW_API
+//#define NEW_API
 
 #if !defined(NEW_API)
 typedef handle(u32) renderer_mesh_handle; 
 typedef handle(u32) renderer_texture_handle;
 #else
 typedef handle(void *) renderer_resource_group_handle;
-typedef handle(u32) renderer_sampler_handle;
+typedef handle(void *) renderer_sampler_handle;
 typedef handle(void *) renderer_mesh_handle;
 typedef handle(u32) renderer_texture_handle;
 
@@ -231,14 +231,15 @@ struct renderer_sampler_config
 {
     renderer_filter_type MagFilter;
     renderer_filter_type MinFilter;
-    bool8 EnableAnisotrophyFiltering;
+    bool8 EnableAnisotropyFiltering;
 };
 
 struct renderer_texture_config
 {
-    renderer_sampler_handle Sampler;
+    renderer_sampler_handle SamplerHandle;
     renderer_image_format Format;
     u32 Width, Height;
+    int MipLevels;
 };
 
 struct renderer_mesh_config

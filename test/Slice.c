@@ -9,7 +9,7 @@
 
 internal void *Allocate(void *UserData, isize SizeBytes, usize Alignment)
 {
-    (void)UserData;
+    (void)UserData, (void)Alignment;
     void *Ptr = malloc(SizeBytes);
     ASSERT(Ptr, "malloc()");
     return Ptr;
@@ -70,6 +70,7 @@ int main(void)
             }
 
             (void)printfln("====================== Accessing slice builder: ");
+            (void)printfln("====================== BuilderC: ");
             for (int i = 0; i < 9; i++)
             {
                 (void)printfln("  %d: %d", i, SliceBuilder_Get(&BuilderC, i));
