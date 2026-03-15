@@ -38,11 +38,10 @@ typedef dynamic_array(VkFramebuffer) vk_framebuffer_array;
 typedef dynamic_array(vk_texture) vk_texture_array;
 typedef_struct(vk_frame_data);
 typedef_struct(vk_device_memory_image);
-typedef_struct(vk_depth_buffer);
 typedef_struct(vk_swapchain_image);
-typedef_struct(vk_color_resource);
 typedef_struct(vk_mesh);
 typedef_struct(vk_uniform_buffer);
+typedef_struct(vk_render_target);
 
 
 #ifdef NEW_API
@@ -61,8 +60,27 @@ struct vk_texture
 };
 #endif
 
+struct vk_graphics_pipeline
+{
+    VkPipelineLayout Layout;
+    VkPipeline Handle;
+};
+struct vk_render_target
+{
+    VkSampleCountFlags SampleCount;
+    u32 ImageCount;
+
+    VkRenderPass RenderPass;
+    VkSemaphore *OnFrameFinishedSemaphores;
+    VkFramebuffer *Framebuffers;
+    vkm_image_and_view DepthResource;
+    vkm_image_and_view ColorResource;
+};
+
 typedef slice_builder_typed(VkSampler, 64) vk_sampler_list_array;
 typedef slice_builder_typed(vk_texture, 64) vk_texture_list_array;
+typedef slice_builder_typed(vk_graphics_pipeline, 8) vk_graphics_pipeline_list_array;
+typedef slice_builder_typed(vk_render_target, 4) vk_render_target_list_array;
 typedef_struct(vk_resource_group);
 
 
@@ -106,11 +124,7 @@ struct vk_swapchain_support_config
     vk_surface_format_array Formats;
     vk_present_mode_array PresentModes;
 };
-struct vk_graphics_pipeline
-{
-    VkPipelineLayout Layout;
-    VkPipeline Handle;
-};
+
 struct renderer
 {
     arena_alloc Arena; /* owns the renderer */
@@ -141,6 +155,8 @@ struct renderer
         VkExtent2D Extent;
         VkFormat ImageFormat;
         VkPresentModeKHR PresentMode;
+
+        u32 ImageCount;
 
         arena_context ArenaContext;
     } Swapchain;
@@ -195,13 +211,14 @@ struct renderer
         vk_resource_group *Next, *Prev;
         vkm GpuAllocator;
         arena_alloc CpuAllocator;
-        /* samplers and textures are owned by the gpu allocator */
+        /* samplers and textures are owned by the GpuAllocator */
         vk_sampler_list_array Samplers;
         vk_texture_list_array Textures;
         /* vk_mesh objects are owned by the CpuAllocator */
+        vk_graphics_pipeline_list_array GraphicsPipelines;
+        vk_render_target_list_array RenderTargets;
     } *ResourceGroupHead, *ResourceGroupFreeHead;
-
-    u32 ResourceUpdateID;
+    vk_resource_group *GlobalResourceGroup;
 #else
     /* renderer_mesh_handle */
     dynamic_array(vk_mesh) MeshArray;
@@ -213,7 +230,8 @@ struct renderer
 /* NOTE: platform must implement these functions: */
 VkResult Vulkan_Platform_CreateWindowSurface(VkInstance Instance, VkAllocationCallbacks *AllocCallback, VkSurfaceKHR *OutWindowSurface);
 typedef_struct(vulkan_platform_instance_extensions);
-struct vulkan_platform_instance_extensions {
+struct vulkan_platform_instance_extensions 
+{
     u32 Count;
     const char **StringPtrArray;
 };

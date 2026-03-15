@@ -185,7 +185,7 @@ internal renderer_texture_handle LoadTexture(renderer_handle Renderer, const cha
     }
 
     Texture = Renderer_UploadTexture(Renderer, Image, Width, Height, 1, RENDERER_IMAGE_FORMAT_RGBA);
-    if (!RENDERER_IS_HANDLE_VALID(Texture))
+    if (Texture.Value == 0)
     {
         ErrorMessage = "Renderer_UploadTexture()";
         goto Error;

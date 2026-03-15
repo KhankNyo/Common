@@ -11,8 +11,7 @@ extern "C" {
 #include "Memory.h"
 #include "Profiler.h"
 
-#define RENDERER_IS_HANDLE_VALID(handle) ((handle).Value != 0)
-typedef handle(u32) renderer_graphics_pipeline_handle;
+
 typedef_struct(renderer_vertex_attributes);
 typedef_struct(renderer_vertex_description);
 typedef_struct(renderer_graphics_pipeline_config);
@@ -27,16 +26,20 @@ typedef_struct(renderer_scissor);
 #if !defined(NEW_API)
 typedef handle(u32) renderer_mesh_handle; 
 typedef handle(u32) renderer_texture_handle;
+typedef handle(u32) renderer_graphics_pipeline_handle;
 #else
+typedef handle(void *) renderer_graphics_pipeline_handle;
 typedef handle(void *) renderer_resource_group_handle;
 typedef handle(void *) renderer_sampler_handle;
 typedef handle(void *) renderer_mesh_handle;
 typedef handle(u32) renderer_texture_handle;
+typedef handle(void *) renderer_render_target_handle;
 
 typedef_struct(renderer_resource_group_config);
 typedef_struct(renderer_texture_config);
 typedef_struct(renderer_mesh_config);
 typedef_struct(renderer_sampler_config);
+typedef_struct(renderer_render_target_config);
 #endif
 
 
@@ -95,6 +98,9 @@ struct renderer_graphics_pipeline_config
 {
     renderer_graphics_feature_flags EnabledGraphicsFeatures;
     renderer_culling_direction CullingDirection;
+#ifdef NEW_API
+    renderer_render_target_handle RenderTargetHandle;
+#endif
     float SampleShadingMin;
 
     const u8 *FragShaderCode;
@@ -212,6 +218,7 @@ void Renderer_CreateGraphicsPipelines(
 #else
 
 #define RENDERER_GLOBAL_RESOURCE_GROUP (renderer_resource_group_handle) { 0 }
+#define RENDERER_DEFAULT_SAMPLER (renderer_sampler_handle) { 0 }
 
 typedef enum 
 {
@@ -225,6 +232,11 @@ struct renderer_resource_group_config
     isize ImagePoolSizeBytes;
     isize GpuBufferPoolSizeBytes;
     isize CpuBufferPoolSizeBytes;
+};
+
+struct renderer_render_target_config
+{
+    int MSAASampleCount;
 };
 
 struct renderer_sampler_config
@@ -257,6 +269,10 @@ renderer_resource_group_handle Renderer_CreateResourceGroup(
 );
 void Renderer_DestroyResourceGroup(
     renderer_handle Renderer, 
+    renderer_resource_group_handle ResourceGroup
+);
+void Renderer_BindResourceGroup(
+    renderer_handle Renderer,
     renderer_resource_group_handle ResourceGroup
 );
 
@@ -295,10 +311,16 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
     const u32 *IndexBuffer
 );
 
+renderer_render_target_handle Renderer_CreateRenderTarget(
+    renderer *Vk,
+    renderer_resource_group_handle ResourceGroupHandle,
+    const renderer_render_target_config *Config
+);
+
 renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
     renderer_handle Renderer,
-    renderer_resource_group_handle ResourceGroup,
-    const renderer_graphics_pipeline_config *GraphicsPipelineConfig
+    renderer_resource_group_handle ResourceGroupHandle,
+    const renderer_graphics_pipeline_config *Config
 );
 
 
@@ -318,21 +340,16 @@ void Renderer_UpdateMutableMesh(
     const u32 *IndexBuffer, isize IndexCount
 );
 
-void Renderer_CommitResources(
-    renderer_handle Renderer,
-    renderer_resource_group_handle ResourceGroup
-);
 
 
 
-force_inline renderer_resource_group_handle Renderer__DefaultResources(renderer_handle Renderer)
+force_inline void Renderer__InitDefaultResources(renderer_handle Renderer)
 {
     /* default/global resource group */
     {
         renderer_resource_group_config ResourceConfig = { };
-        renderer_resource_group_handle DefaultResourceGroup = Renderer_CreateResourceGroup(Renderer, &ResourceConfig);
-        UNREACHABLE_IF(DefaultResourceGroup.Value != 0, "Default resource group must have a handle value of 0");
-        UNREACHABLE_IF(DefaultResourceGroup.Value != RENDERER_GLOBAL_RESOURCE_GROUP.Value, "");
+        renderer_resource_group_handle ResourceGroup = Renderer_CreateResourceGroup(Renderer, &ResourceConfig);
+        UNREACHABLE_IF(ResourceGroup.Value != 0, "Default resource group must have a handle value of 0");
     }
 
     /* default sampler */
@@ -340,23 +357,23 @@ force_inline renderer_resource_group_handle Renderer__DefaultResources(renderer_
         renderer_sampler_config SamplerConfig = {
             .MagFilter = RENDERER_FILTER_LINEAR,
             .MinFilter = RENDERER_FILTER_LINEAR,
-            .EnableAnisotrophyFiltering = false,
+            .EnableAnisotropyFiltering = false,
         };
-        renderer_sampler_handle DefaultSampler = Renderer_CreateSampler(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &SamplerConfig);
-        UNREACHABLE_IF(DefaultSampler.Value != 0, "Default sampler must have a handle of 0");
+        renderer_sampler_handle Sampler = Renderer_CreateSampler(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &SamplerConfig);
+        (void)Sampler;
     }
 
     /* default texture */
     {
         renderer_texture_config TextureConfig = {
-            .Sampler = { 0 },
+            .SamplerHandle = { 0 },
             .Format = RENDERER_IMAGE_FORMAT_RGBA, 
             .Width = 1,
             .Height = 1,
         };
         u32 Pink = 0xFFFF00FF;
         renderer_texture_handle Texture = Renderer_CreateStaticTexture(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &TextureConfig, &Pink);
-        UNREACHABLE_IF(Texture.Value != 0, "Default texture must have a handle of 0");
+        (void)Texture;
     }
 
     /* default mesh: full screen rectangle */
@@ -377,7 +394,16 @@ force_inline renderer_resource_group_handle Renderer__DefaultResources(renderer_
             .IndexCount = 6,
         };
         renderer_mesh_handle Mesh = Renderer_CreateStaticMesh(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &MeshConfig, VertexBuffer, IndexBuffer);
-        UNREACHABLE_IF(Mesh.Value != 0, "Default mesh must have a handle of 0");
+        (void)Mesh;
+    }
+
+    /* default render target */
+    {
+        renderer_render_target_config Config = {
+            .MSAASampleCount = 1,
+        };
+        renderer_render_target_handle RenderTarget = Renderer_CreateRenderTarget(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &Config);
+        (void)RenderTarget;
     }
 
     /* default graphics pipeline */
@@ -392,16 +418,20 @@ force_inline renderer_resource_group_handle Renderer__DefaultResources(renderer_
             .Attribs = &Attrib,
         };
         renderer_graphics_pipeline_config Config = {
+            .RenderTargetHandle = { 0 },
+
             .EnabledGraphicsFeatures = RENDERER_GFXFT_NONE,
             .FragShaderCode = NULL,
             .FragShaderCodeSizeBytes = 0,
             .VertShaderCode = NULL,
             .VertShaderCodeSizeBytes = 0,
-            .VertexDescription = VertexDesc,
+            .VertexDescription = &VertexDesc,
         };
-        renderer_graphics_pipeline_handle Handle = Renderer_CreateGraphicsPipeline(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &Config);
-        UNREACHABLE_IF(Handle.Value != 0, "Default graphics pipeline must have a handle value of 0");
+        renderer_graphics_pipeline_handle GraphicsPipeline = Renderer_CreateGraphicsPipeline(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &Config);
+        (void)GraphicsPipeline;
     }
+
+    Renderer_BindResourceGroup(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP);
 }
 
 #endif
