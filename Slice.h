@@ -75,11 +75,10 @@ typedef_struct(slice_builder__node_header);
 #define slice_builder_typed(type, block_capacity) struct {\
     arena_alloc *Arena; \
     isize BlockCount; \
-    slice_builder__node_header *First; \
-    packed(struct { \
+    struct { \
         slice_builder__node_header Header; \
         type Pool[block_capacity]; \
-    }) *Last; \
+    } *First, *Last; \
 }
 
 #define slice(type) struct {\
@@ -96,20 +95,20 @@ typedef_struct(slice_builder__node_header);
     (iterator_name - (p_slice)->Data)
 
 
-#define SliceBuilder_Create(p_slice_builder, p_arena) (typeof(*(p_slice_builder))) {.Arena = (p_arena)}
+#define SliceBuilder_Create(p_slice_builder, p_arena) (*(p_slice_builder) = (typeof(*(p_slice_builder))){.Arena = (p_arena)})
 
 #define SliceBuilder_GetPoolCapacity(p_slice_builder) \
     STATIC_ARRAY_SIZE((SLICE_BUILDER__NODE_TYPE(p_slice_builder)){0}.Pool)
 
 #define SliceBuilder_Get(p_slice_builder, index) \
     ((SLICE_BUILDER__NODE_TYPE(p_slice_builder) *)SliceBuilder__GetHeader(\
-        (p_slice_builder)->First, \
+        (slice_builder__node_header *)(p_slice_builder)->First, \
         (index)*sizeof(SLICE_BUILDER__POOL_ELEM_TYPE(p_slice_builder)), \
         sizeof((p_slice_builder)->Last[0].Pool))\
     )->Pool[(index) % SliceBuilder_GetPoolCapacity(p_slice_builder)]
 
 #define SliceBuilder_GetCount(p_slice_builder) \
-    ((p_slice_builder)->BlockCount * SliceBuilder_GetPoolCapacity(p_slice_builder) \
+    (((p_slice_builder)->BlockCount - 1) * SliceBuilder_GetPoolCapacity(p_slice_builder) \
     + ((p_slice_builder)->Last? (p_slice_builder)->Last->Header.Count : 0))
 
 /* NOTE: it is ok to take the address of an element in SliceBuilder */
@@ -130,17 +129,17 @@ typedef_struct(slice_builder__node_header);
     \
     if (should_allocate_new_node_) {\
         \
-        slice_builder__node_header *BasePtr = Arena_AllocNonZero(builder_->Arena, \
+        SLICE_BUILDER__NODE_TYPE(builder_) *new_node_ = Arena_AllocNonZero(builder_->Arena, \
             sizeof(SLICE_BUILDER__NODE_TYPE(builder_))\
         );\
-        *BasePtr = (slice_builder__node_header) { 0 };\
+        new_node_->Header = (slice_builder__node_header) { 0 }; /* NOTE: only zeroing out header */\
         \
         if (!builder_->Last) {\
-            builder_->First = BasePtr;\
-            builder_->Last = (SLICE_BUILDER__NODE_TYPE(builder_) *)BasePtr;\
+            builder_->First = new_node_;\
+            builder_->Last = new_node_;\
         } else {\
-            builder_->Last->Header.Next = BasePtr;\
-            builder_->Last = (SLICE_BUILDER__NODE_TYPE(builder_) *)BasePtr;\
+            builder_->Last->Header.Next = (slice_builder__node_header *)new_node_;\
+            builder_->Last = new_node_;\
         }\
         builder_->BlockCount++;\
     } else if (builder_->Last->Header.Count >= pool_capacity_) {\
@@ -152,7 +151,7 @@ typedef_struct(slice_builder__node_header);
     ASSERT(builder_->Last && builder_->Last->Header.Count < pool_capacity_);\
     \
     isize top_ = builder_->Last->Header.Count++;\
-    ((SLICE_BUILDER__NODE_TYPE(builder_) *)builder_->Last)->Pool[top_] = __VA_ARGS__;\
+    builder_->Last->Pool[top_] = __VA_ARGS__;\
 } while (0)
 
 #define SliceBuilder_CopyToSlice(p_slice_builder, p_slice, p_arena_slice_owner) do {\
@@ -168,21 +167,21 @@ typedef_struct(slice_builder__node_header);
     SLICE_BUILDER__POOL_ELEM_TYPE(builder_) *slice_ptr_;\
     isize slice_elem_count_ = 0;\
     {\
-        isize BlockElemCapacity = SliceBuilder_GetPoolCapacity(builder_);\
-        slice_elem_count_ = BlockElemCapacity * (builder_->BlockCount - 1) + builder_->Last->Header.Count;\
+        isize block_capacity_ = SliceBuilder_GetPoolCapacity(builder_);\
+        slice_elem_count_ = SliceBuilder_GetCount(builder_);\
         \
         Arena_AllocArrayNonZero(arena_slice_owner, &slice_ptr_, slice_elem_count_);\
-        SLICE_BUILDER__POOL_ELEM_TYPE(builder_) *Ptr = slice_ptr_;\
+        SLICE_BUILDER__POOL_ELEM_TYPE(builder_) *slice_iter_ptr_ = slice_ptr_;\
         \
-        SLICE_BUILDER__NODE_TYPE(builder_) *Curr = (typeof(Curr))builder_->First;\
+        SLICE_BUILDER__NODE_TYPE(builder_) *node_iter_ = (typeof(node_iter_))builder_->First;\
         for (isize i = 0; i < builder_->BlockCount - 1; i++) {\
-            ASSERT(Curr);\
-            memcpy(Ptr, Curr->Pool, sizeof Curr->Pool);\
-            Ptr += BlockElemCapacity;\
-            Curr = (typeof(Curr))Curr->Header.Next;\
+            ASSERT(node_iter_);\
+            memcpy(slice_iter_ptr_, node_iter_->Pool, sizeof node_iter_->Pool);\
+            slice_iter_ptr_ += block_capacity_;\
+            node_iter_ = (typeof(node_iter_))node_iter_->Header.Next;\
         }\
-        ASSERT(Curr);\
-        memcpy(Ptr, Curr->Pool, Curr->Header.Count * sizeof Ptr[0]);\
+        ASSERT(node_iter_);\
+        memcpy(slice_iter_ptr_, node_iter_->Pool, node_iter_->Header.Count * sizeof slice_iter_ptr_[0]);\
     }\
     *slice_ = (typeof(slice_[0])) { \
         .Count = slice_elem_count_,\
@@ -195,7 +194,7 @@ typedef_struct(slice_builder__node_header);
     slice_builder_->BlockCount = 1;\
     slice_builder_->Last = (SLICE_BUILDER__NODE_TYPE(slice_builder_) *)slice_builder_->First;\
     if (slice_builder_->First) \
-        slice_builder_->First->Count = 0; \
+        slice_builder_->First->Header.Count = 0; \
 } while (0)
 
 
