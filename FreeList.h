@@ -163,7 +163,10 @@ void *FreeList_AllocNonZero(freelist_alloc *Allocator, i32 SizeBytes)
 
         Header->SizeBytes = SizeBytes;
         Header->Next = Allocator->Alloced;
-        Allocator->Alloced->Prev = Header;
+        if (Allocator->Alloced)
+        {
+            Allocator->Alloced->Prev = Header;
+        }
         Allocator->Alloced = Header;
         return Arena_AlignPointer(Header + 1, Alignment);
     }
@@ -183,6 +186,18 @@ void *FreeList_AllocNonZero(freelist_alloc *Allocator, i32 SizeBytes)
     {
         /* allocate a new pool and get a free list from there */
         FreeList__NewPool(Allocator, Allocator->PoolCapacity, &FreeNode);
+        i64 NewFreeNodeSize = FreeNode->CapacityBytes - AlignedSizeBytes;
+        bool32 Divisible = NewFreeNodeSize >= (i64)sizeof(freelist__header) + Alignment;
+        if (Divisible)
+        {
+            u8 *Ptr = (u8 *)(FreeNode + 1);
+            freelist__header *FreeNodeFromSplit = (freelist__header *)(Ptr + AlignedSizeBytes);
+            *FreeNodeFromSplit = (freelist__header) {
+                .CapacityBytes = NewFreeNodeSize - sizeof(freelist__header),
+            };
+            FreeList__InsertFreeNode(Allocator, FreeNodeFromSplit);
+            FreeNode->CapacityBytes = AlignedSizeBytes;
+        }
     }
     else
     {
@@ -198,13 +213,14 @@ void *FreeList_AllocNonZero(freelist_alloc *Allocator, i32 SizeBytes)
     }
 
     /* divide free header */
-    bool32 Divisible = FreeNode->CapacityBytes >= (i64)(Alignment + sizeof(freelist__header)) + AlignedSizeBytes;
+    i64 NewFreeNodeSize = FreeNode->CapacityBytes - AlignedSizeBytes;
+    bool32 Divisible = NewFreeNodeSize >= (i64)sizeof(freelist__header) + Alignment;
     if (Divisible)
     {
         u8 *Ptr = (u8 *)(FreeNode + 1);
         freelist__header *FreeNodeFromSplit = (freelist__header *)(Ptr + AlignedSizeBytes);
         *FreeNodeFromSplit = (freelist__header) {
-            .CapacityBytes = Alignment,
+            .CapacityBytes = NewFreeNodeSize - sizeof(freelist__header),
         };
         FreeList__InsertFreeNode(Allocator, FreeNodeFromSplit);
         FreeNode->CapacityBytes = AlignedSizeBytes;
@@ -252,7 +268,7 @@ void FreeList_Free(freelist_alloc *Allocator, void *Ptr)
     while (Next 
         && (uintptr_t)(FreeNode + 1) + FreeNode->CapacityBytes == (uintptr_t)Next)
     {
-        FreeNode->CapacityBytes += Next->CapacityBytes;
+        FreeNode->CapacityBytes += Next->CapacityBytes + sizeof(*Next);
         Next = Next->Next;
     }
     FreeNode->Next = Next;
