@@ -8,29 +8,29 @@
 
 typedef_struct(freelist_alloc);
 typedef_struct(freelist__header);
+typedef_struct(freelist__pool_header);
 
 struct freelist_alloc
 {
-    arena_alloc *Arena;
+    arena_user_allocator UserAlloc;
+    i32 PoolCapacity;   /* should only be set once (during FreeList_Create()) */
+    i16 Back;
+    u16 Alignment;      /* should only be set once (during FreeList_Create()) */
+    freelist__pool_header *Pool;
     freelist__header *Alloced;
     freelist__header *Freed;
 };
-struct freelist__header
-{
-    freelist__header *Next, *Prev;
-    isize SizeBytes, CapacityBytes;
-};
 
 
-void FreeList_Create(freelist_alloc *Allocator);
-void FreeList_CreateWithArena(freelist_alloc *Allocator, arena_alloc *Arena);
+
+void FreeList_Create(freelist_alloc *Allocator, arena_user_allocator UserAlloc, i32 PoolCapacity, u16 Alignment);
 void FreeList_Destroy(freelist_alloc *Allocator);
 
-void *FreeList_Alloc(freelist_alloc *Allocator, isize SizeBytes);
-void *FreeList_AllocNonZero(freelist_alloc *Allocator, isize SizeBytes);
-void *FreeList_Realloc(freelist_alloc *Allocator, void *Ptr, isize SizeBytes);
-void *FreeList_ReallocNonZero(freelist_alloc *Allocator, isize SizeBytes);
-void FreeList_Free(freelist_alloc *Allocator, isize SizeBytes);
+void *FreeList_Alloc(freelist_alloc *Allocator, i32 SizeBytes);
+void *FreeList_AllocNonZero(freelist_alloc *Allocator, i32 SizeBytes);
+void *FreeList_Realloc(freelist_alloc *Allocator, void *Ptr, i32 SizeBytes);
+void *FreeList_ReallocNonZero(freelist_alloc *Allocator, void *Ptr, i32 SizeBytes);
+void FreeList_Free(freelist_alloc *Allocator, void *Ptr);
 
 #define FreeList_AllocArray(p_freelist, p_array_ptr, isize_count) \
     (*(p_array_ptr) = FreeList_Alloc(p_freelist, (isize_count) * sizeof((p_array_ptr)[0][0])))
@@ -43,10 +43,262 @@ void FreeList_Free(freelist_alloc *Allocator, isize SizeBytes);
 
 
 
+
 #endif /* FREE_LIST_H */
 
 #if defined(FREE_LIST_IMPLEMENTATION) && !defined(FREE_LIST_ALREADY_IMPLEMENTED)
 #define FREE_LIST_ALREADY_IMPLEMENTED
+
+#include <string.h> /* memset */
+
+#define FL__ALLOC(user_alloc, size_bytes, alignment) (user_alloc).Allocate((user_alloc).Data, size_bytes, alignment)
+#define FL__FREE(user_alloc, ptr) (user_alloc).Free((user_alloc).Data, ptr)
+#define FL__POOL_FREE_SPACE_CAP(p_alloc) (i64)((p_alloc)->PoolCapacity - sizeof(freelist__pool_header) - sizeof(freelist__header))
+#define FL__HEADER_FROM_PTR(p_alloc, ptr) ((freelist__header *)((u8 *)(ptr) - (p_alloc)->Back))
+
+struct freelist__header
+{
+    freelist__header *Next, *Prev;
+    i64 SizeBytes, CapacityBytes;
+    /* data after, depends on alignment */
+};
+struct freelist__pool_header
+{
+    freelist__pool_header *Next;
+    /* data after */
+};
+
+
+
+internal freelist__pool_header *FreeList__NewPool(freelist_alloc *Allocator, i64 PoolSizeBytes, freelist__header **OutFirstFreeHeader)
+{
+    u32 Alignment = MAXIMUM(Allocator->Alignment, alignment_of(freelist__pool_header));
+    PoolSizeBytes = Arena_AlignSize(PoolSizeBytes, Alignment);
+
+    u8 *PoolPtr = FL__ALLOC(Allocator->UserAlloc, PoolSizeBytes, Alignment);
+    freelist__pool_header *Pool = (typeof(Pool))PoolPtr;
+
+    /* link */
+    {
+        Pool->Next = Allocator->Pool;
+        Allocator->Pool = Pool;
+    }
+
+    /* get free header */
+    {
+        i64 FreeSpaceCapacity = Allocator->PoolCapacity - sizeof(freelist__pool_header) - sizeof(freelist__header);
+        u8 *FreeSpace = (PoolPtr + sizeof(freelist__pool_header));
+        freelist__header *FreeSpaceHeader = Arena_AlignPointer(FreeSpace, alignment_of(freelist__header));
+        *FreeSpaceHeader = (freelist__header) {
+            .CapacityBytes = FreeSpaceCapacity,
+        };
+        *OutFirstFreeHeader = FreeSpaceHeader;
+    }
+    return Pool;
+}
+
+internal void FreeList__InsertFreeNode(freelist_alloc *Allocator, freelist__header *FreeNode)
+{
+    /* insert by increasing addr */
+    freelist__header *Curr = Allocator->Freed;
+    freelist__header *Prev = NULL;
+    while (Curr && (uintptr_t)FreeNode > (uintptr_t)Curr)
+    {
+        Prev = Curr;
+        Curr = Curr->Next;
+    }
+    if (Prev)
+    {
+        Prev->Next = FreeNode;
+        FreeNode->Prev = Prev;
+    }
+    else
+    {
+        /* first node */
+        Allocator->Freed = FreeNode;
+        FreeNode->Prev = NULL;
+    }
+    FreeNode->Next = Curr;
+    if (Curr)
+        Curr->Prev = FreeNode;
+}
+
+void FreeList_Create(freelist_alloc *Allocator, arena_user_allocator UserAlloc, i32 PoolCapacity, u16 Alignment)
+{
+    Alignment = MAXIMUM(Alignment, MAXIMUM(alignment_of(freelist__pool_header), alignment_of(freelist__header)));
+    PoolCapacity = Arena_AlignSize(PoolCapacity + sizeof(freelist__pool_header) + sizeof(freelist__header), Alignment);
+
+    isize AlignedHeaderSize = Arena_AlignSize(sizeof(freelist__header), Alignment);
+    *Allocator = (freelist_alloc) {
+        .UserAlloc = UserAlloc,
+        .PoolCapacity = PoolCapacity,
+        .Alignment = Alignment,
+        .Back = MAXIMUM(Alignment, AlignedHeaderSize),
+    };
+    Allocator->Pool = FreeList__NewPool(Allocator, Allocator->PoolCapacity, &Allocator->Freed);
+}
+
+void FreeList_Destroy(freelist_alloc *Allocator)
+{
+    arena_user_allocator UserAlloc = Allocator->UserAlloc;
+    freelist__pool_header *Pool = Allocator->Pool;
+    while (Pool)
+    {
+        freelist__pool_header *Next = Pool->Next;
+        FL__FREE(UserAlloc, Pool);
+        Pool = Next;
+    }
+}
+
+void *FreeList_AllocNonZero(freelist_alloc *Allocator, i32 SizeBytes)
+{
+    u32 Alignment = Allocator->Alignment;
+    i64 AlignedSizeBytes = Arena_AlignSize(SizeBytes, Alignment);
+    bool32 CannotFitIntoRegularPool = AlignedSizeBytes > FL__POOL_FREE_SPACE_CAP(Allocator);
+    if (CannotFitIntoRegularPool)
+    {
+        i64 PoolSizeBytes = Arena_AlignSize(AlignedSizeBytes + sizeof(freelist__pool_header) + sizeof(freelist__header), Alignment);
+        freelist__header *Header;
+        (void)FreeList__NewPool(Allocator, PoolSizeBytes, &Header);
+
+        Header->SizeBytes = SizeBytes;
+        Header->Next = Allocator->Alloced;
+        Allocator->Alloced->Prev = Header;
+        Allocator->Alloced = Header;
+        return Arena_AlignPointer(Header + 1, Alignment);
+    }
+
+    /* search free list */
+    freelist__header *FreeNode = NULL;
+    for (freelist__header *i = Allocator->Freed; i; i = i->Next)
+    {
+        bool32 Fits = AlignedSizeBytes <= i->CapacityBytes;
+        if (Fits)
+        {
+            FreeNode = i;
+            break;
+        }
+    }
+    if (!FreeNode)
+    {
+        /* allocate a new pool and get a free list from there */
+        FreeList__NewPool(Allocator, Allocator->PoolCapacity, &FreeNode);
+    }
+    else
+    {
+        /* unlink FreeNode */
+        freelist__header *Prev = FreeNode->Prev;
+        freelist__header *Next = FreeNode->Next;
+        if (Prev)
+            Prev->Next = Next;
+        else
+            Allocator->Freed = Next;
+        if (Next)
+            Next->Prev = Prev;
+    }
+
+    /* divide free header */
+    bool32 Divisible = FreeNode->CapacityBytes >= (i64)(Alignment + sizeof(freelist__header)) + AlignedSizeBytes;
+    if (Divisible)
+    {
+        u8 *Ptr = (u8 *)(FreeNode + 1);
+        freelist__header *FreeNodeFromSplit = (freelist__header *)(Ptr + AlignedSizeBytes);
+        *FreeNodeFromSplit = (freelist__header) {
+            .CapacityBytes = Alignment,
+        };
+        FreeList__InsertFreeNode(Allocator, FreeNodeFromSplit);
+        FreeNode->CapacityBytes = AlignedSizeBytes;
+    }
+    FreeNode->SizeBytes = SizeBytes;
+
+    /* link with allocated list */
+    {
+        FreeNode->Prev = NULL;
+        FreeNode->Next = Allocator->Alloced;
+        if (Allocator->Alloced)
+            Allocator->Alloced->Prev = FreeNode;
+        Allocator->Alloced = FreeNode;
+    }
+
+    /* return aligned pointer */
+    void *Ptr = Arena_AlignPointer(FreeNode + 1, Alignment);
+    ASSERT((uintptr_t)Ptr + SizeBytes <= (uintptr_t)FreeNode + sizeof(*FreeNode) + FreeNode->CapacityBytes,
+        "aligned size: %zi", AlignedSizeBytes
+    );
+    return Ptr;
+}
+
+void FreeList_Free(freelist_alloc *Allocator, void *Ptr)
+{
+    /* unlink from allocated list */
+    freelist__header *FreeNode = FL__HEADER_FROM_PTR(Allocator, Ptr);
+    {
+        freelist__header *Prev = FreeNode->Prev;
+        freelist__header *Next = FreeNode->Next;
+        if (Prev)
+            Prev->Next = Next;
+        else 
+            Allocator->Alloced = Next;
+        if (Next)
+            Next->Prev = Prev;
+
+        FreeNode->Prev = NULL;
+        FreeNode->Next = NULL;
+    }
+
+    /* insert free node then coalesce */
+    FreeList__InsertFreeNode(Allocator, FreeNode);
+    freelist__header *Next = FreeNode->Next;
+    while (Next 
+        && (uintptr_t)(FreeNode + 1) + FreeNode->CapacityBytes == (uintptr_t)Next)
+    {
+        FreeNode->CapacityBytes += Next->CapacityBytes;
+        Next = Next->Next;
+    }
+    FreeNode->Next = Next;
+}
+
+void *FreeList_ReallocNonZero(freelist_alloc *Allocator, void *Ptr, i32 SizeBytes)
+{
+    freelist__header *Header = FL__HEADER_FROM_PTR(Allocator, Ptr);
+    if (SizeBytes < Header->CapacityBytes)
+    {
+        Header->SizeBytes = SizeBytes;
+        return Ptr;
+    }
+    else
+    {
+        /* must allocate new ptr */
+        FreeList_Free(Allocator, Ptr);
+        /* NOTE: data in ptr is still valid */
+        void *NewPtr = FreeList_AllocNonZero(Allocator, SizeBytes);
+        if ((uintptr_t)NewPtr != (uintptr_t)Ptr)
+        {
+            memcpy(NewPtr, Ptr, Header->SizeBytes);
+        }
+        return NewPtr;
+    }
+}
+
+void *FreeList_Realloc(freelist_alloc *Allocator, void *Ptr, i32 SizeBytes)
+{
+    isize NonZeroSize = FL__HEADER_FROM_PTR(Allocator, Ptr)->SizeBytes;
+    void *NewPtr = FreeList_ReallocNonZero(Allocator, Ptr, SizeBytes);
+    if (SizeBytes > NonZeroSize)
+    {
+        memset((u8 *)NewPtr + NonZeroSize, 0, SizeBytes - NonZeroSize);
+    }
+    return NewPtr;
+}
+
+void *FreeList_Alloc(freelist_alloc *Allocator, i32 SizeBytes)
+{
+    void *Ptr = FreeList_AllocNonZero(Allocator, SizeBytes);
+    memset(Ptr, 0, SizeBytes);
+    return Ptr;
+}
+
+
 
 #endif /* FREE_LIST_IMPLEMENTATION */
 
