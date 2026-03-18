@@ -86,6 +86,15 @@ void *Arena_AllocNonZero(arena_alloc *Arena, i64 SizeBytes);
     arena__scope_data.i; \
     (arena__scope_data.i = 0), Arena_RestoreSnapshot(p_arena, arena__scope_data.Snapshot))
 
+#define Arena_ScopedAlignment(p_arena, u32_alignment) for (\
+    u32 i = 1, \
+        scoped_alignment_restore = (p_arena)->Alignment, \
+        scoped_alignment_dummy = Arena_SetAlignment(p_arena, u32_alignment); \
+    i;\
+    (i = 0), \
+    (void)scoped_alignment_dummy, \
+    Arena_SetAlignment(p_arena, scoped_alignment_restore))
+
 force_inline arena_snapshot Arena_SaveSnapshot(arena_alloc *Arena);
 force_inline void Arena_RestoreSnapshot(arena_alloc *Arena, arena_snapshot Snapshot);
 

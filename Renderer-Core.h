@@ -28,18 +28,16 @@ typedef handle(u32) renderer_mesh_handle;
 typedef handle(u32) renderer_texture_handle;
 typedef handle(u32) renderer_graphics_pipeline_handle;
 #else
-typedef handle(void *) renderer_graphics_pipeline_handle;
-typedef handle(void *) renderer_resource_group_handle;
-typedef handle(void *) renderer_sampler_handle;
-typedef handle(void *) renderer_mesh_handle;
-typedef handle(u32) renderer_texture_handle;
-typedef handle(void *) renderer_render_target_handle;
+typedef handle(u64) renderer_graphics_pipeline_handle;
+typedef handle(u64) renderer_resource_group_handle;
+typedef handle(u64) renderer_sampler_handle;
+typedef handle(u64) renderer_mesh_handle;
+typedef handle(u64) renderer_texture_handle;
 
 typedef_struct(renderer_resource_group_config);
 typedef_struct(renderer_texture_config);
 typedef_struct(renderer_mesh_config);
 typedef_struct(renderer_sampler_config);
-typedef_struct(renderer_render_target_config);
 #endif
 
 
@@ -98,9 +96,6 @@ struct renderer_graphics_pipeline_config
 {
     renderer_graphics_feature_flags EnabledGraphicsFeatures;
     renderer_culling_direction CullingDirection;
-#ifdef NEW_API
-    renderer_render_target_handle RenderTargetHandle;
-#endif
     float SampleShadingMin;
 
     const u8 *FragShaderCode;
@@ -234,11 +229,6 @@ struct renderer_resource_group_config
     isize CpuBufferPoolSizeBytes;
 };
 
-struct renderer_render_target_config
-{
-    int MSAASampleCount;
-};
-
 struct renderer_sampler_config
 {
     renderer_filter_type MagFilter;
@@ -271,7 +261,7 @@ void Renderer_DestroyResourceGroup(
     renderer_handle Renderer, 
     renderer_resource_group_handle ResourceGroup
 );
-void Renderer_BindResourceGroup(
+void Renderer_UpdateResourceGroup(
     renderer_handle Renderer,
     renderer_resource_group_handle ResourceGroup
 );
@@ -311,12 +301,6 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
     const u32 *IndexBuffer
 );
 
-renderer_render_target_handle Renderer_CreateRenderTarget(
-    renderer *Vk,
-    renderer_resource_group_handle ResourceGroupHandle,
-    const renderer_render_target_config *Config
-);
-
 renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
     renderer_handle Renderer,
     renderer_resource_group_handle ResourceGroupHandle,
@@ -345,13 +329,6 @@ void Renderer_UpdateMutableMesh(
 
 force_inline void Renderer__InitDefaultResources(renderer_handle Renderer)
 {
-    /* default/global resource group */
-    {
-        renderer_resource_group_config ResourceConfig = { };
-        renderer_resource_group_handle ResourceGroup = Renderer_CreateResourceGroup(Renderer, &ResourceConfig);
-        UNREACHABLE_IF(ResourceGroup.Value != 0, "Default resource group must have a handle value of 0");
-    }
-
     /* default sampler */
     {
         renderer_sampler_config SamplerConfig = {
@@ -397,15 +374,6 @@ force_inline void Renderer__InitDefaultResources(renderer_handle Renderer)
         (void)Mesh;
     }
 
-    /* default render target */
-    {
-        renderer_render_target_config Config = {
-            .MSAASampleCount = 1,
-        };
-        renderer_render_target_handle RenderTarget = Renderer_CreateRenderTarget(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &Config);
-        (void)RenderTarget;
-    }
-
     /* default graphics pipeline */
     {
         renderer_vertex_attributes Attrib = {
@@ -418,8 +386,6 @@ force_inline void Renderer__InitDefaultResources(renderer_handle Renderer)
             .Attribs = &Attrib,
         };
         renderer_graphics_pipeline_config Config = {
-            .RenderTargetHandle = { 0 },
-
             .EnabledGraphicsFeatures = RENDERER_GFXFT_NONE,
             .FragShaderCode = NULL,
             .FragShaderCodeSizeBytes = 0,
@@ -431,7 +397,7 @@ force_inline void Renderer__InitDefaultResources(renderer_handle Renderer)
         (void)GraphicsPipeline;
     }
 
-    Renderer_BindResourceGroup(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP);
+    Renderer_UpdateResourceGroup(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP);
 }
 
 #endif

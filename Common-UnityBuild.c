@@ -9,3 +9,5 @@
 #include "Common.h"
 #define MEMORY_IMPLEMENTATION
 #include "Memory.h"
+#define FREE_LIST_IMPLEMENTATION
+#include "FreeList.h"

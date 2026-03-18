@@ -7,12 +7,27 @@
 #include "Profiler.h"
 #include "Slice.h"
 
+#include "FreeList.h"
+
 #include "Common-Vulkan.h"
 #include "Common-Renderer-Vulkan-VkMalloc.h"
 
 
+/* TODO: move this somewhere else */
+#define VkDynamicArray_Push(p_freelist, p_da, ...) do {\
+    typeof(p_freelist) freelist_ = p_freelist;\
+    typeof(p_da) dynamic_array_ = p_da;\
+    if (dynamic_array_->Count >= dynamic_array_->Capacity) {\
+        /* resize */\
+        isize NewCapacity = dynamic_array_->Capacity == 0? 8 : dynamic_array_->Capacity * 2;\
+        FreeList_ReallocArray(freelist_, &dynamic_array_->Data, NewCapacity);\
+        dynamic_array_->Capacity = NewCapacity;\
+    }\
+    dynamic_array_->Data[dynamic_array_->Count] = __VA_ARGS__;\
+    dynamic_array_->Count++;\
+} while (0)
 
-#define VULKAN_RESOURCE_GROUP_CAPACITY 64
+
 
 #define QUEUE_FAMILY_INVALID_INDEX -1
 typedef i64 vk_queue_family_index;
@@ -30,12 +45,12 @@ typedef_struct(vk_swapchain);
 typedef_struct(vk_graphics_pipeline);
 
 typedef_struct(vk_texture);
+typedef dynamic_array(vk_texture) vk_texture_array;
 typedef dynamic_array(VkSurfaceFormatKHR) vk_surface_format_array;
 typedef dynamic_array(VkPresentModeKHR) vk_present_mode_array;
 typedef dynamic_array(VkImage) vk_image_array;
 typedef dynamic_array(VkImageView) vk_image_view_array;
 typedef dynamic_array(VkFramebuffer) vk_framebuffer_array; 
-typedef dynamic_array(vk_texture) vk_texture_array;
 typedef_struct(vk_frame_data);
 typedef_struct(vk_device_memory_image);
 typedef_struct(vk_swapchain_image);
@@ -49,7 +64,7 @@ struct vk_texture
 {
     vkm_image_handle Image;
     VkImageView ImageView;
-    VkSampler Sampler;
+    VkSampler SamplerReference;
 };
 #else
 struct vk_texture
@@ -65,22 +80,7 @@ struct vk_graphics_pipeline
     VkPipelineLayout Layout;
     VkPipeline Handle;
 };
-struct vk_render_target
-{
-    VkSampleCountFlags SampleCount;
-    u32 ImageCount;
 
-    VkRenderPass RenderPass;
-    VkSemaphore *OnFrameFinishedSemaphores;
-    VkFramebuffer *Framebuffers;
-    vkm_image_and_view DepthResource;
-    vkm_image_and_view ColorResource;
-};
-
-typedef slice_builder_typed(VkSampler, 64) vk_sampler_list_array;
-typedef slice_builder_typed(vk_texture, 64) vk_texture_list_array;
-typedef slice_builder_typed(vk_graphics_pipeline, 8) vk_graphics_pipeline_list_array;
-typedef slice_builder_typed(vk_render_target, 4) vk_render_target_list_array;
 typedef_struct(vk_resource_group);
 
 
@@ -123,6 +123,27 @@ struct vk_swapchain_support_config
     VkSurfaceCapabilitiesKHR Capabilities;
     vk_surface_format_array Formats;
     vk_present_mode_array PresentModes;
+};
+/* NOTE: every item (texture, samplers, graphics pipelines) allocated using vk_resource_group is a u64 consisting of: 
+ *      Value[63:log2(VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT)] -> bottom bits are zeroed to get a pointer to vk_resource_group
+ *      Value[log2(VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT)-1:0] -> index of the item */
+struct vk_resource_group
+{
+    vk_resource_group *Next, *Prev;
+    vkm GpuAllocator;
+    freelist_alloc CpuAllocator;
+
+    /* samplers and textures are owned by the GpuAllocator */
+    dynamic_array(VkSampler) Samplers;
+    dynamic_array(vk_texture) Textures;
+    dynamic_array(vk_graphics_pipeline) GraphicsPipelines;
+#if 0
+    vk_sampler_list_array Samplers;
+    vk_texture_list_array Textures;
+    /* vk_mesh objects are owned by the CpuAllocator */
+    vk_graphics_pipeline_list_array GraphicsPipelines;
+    vk_render_target_list_array RenderTargets;
+#endif
 };
 
 struct renderer
@@ -206,19 +227,21 @@ struct renderer
 
 
 #ifdef NEW_API
-    struct vk_resource_group
+    vk_resource_group *ResourceGroupHead, 
+                      *ResourceGroupFreeHead, 
+                      *GlobalResourceGroup;
+
+    struct vk_render_target
     {
-        vk_resource_group *Next, *Prev;
-        vkm GpuAllocator;
-        arena_alloc CpuAllocator;
-        /* samplers and textures are owned by the GpuAllocator */
-        vk_sampler_list_array Samplers;
-        vk_texture_list_array Textures;
-        /* vk_mesh objects are owned by the CpuAllocator */
-        vk_graphics_pipeline_list_array GraphicsPipelines;
-        vk_render_target_list_array RenderTargets;
-    } *ResourceGroupHead, *ResourceGroupFreeHead;
-    vk_resource_group *GlobalResourceGroup;
+        VkSampleCountFlags SampleCount;
+        u32 ImageCount;
+
+        VkRenderPass RenderPass;
+        VkSemaphore *OnFrameFinishedSemaphores;
+        VkFramebuffer *Framebuffers;
+        vkm_image_and_view DepthResource;
+        vkm_image_and_view ColorResource;
+    } RenderTarget;
 #else
     /* renderer_mesh_handle */
     dynamic_array(vk_mesh) MeshArray;
