@@ -32,14 +32,21 @@ void *FreeList_Realloc(freelist_alloc *Allocator, void *Ptr, i32 SizeBytes);
 void *FreeList_ReallocNonZero(freelist_alloc *Allocator, void *Ptr, i32 SizeBytes);
 void FreeList_Free(freelist_alloc *Allocator, void *Ptr);
 
-#define FreeList_AllocArray(p_freelist, p_array_ptr, isize_count) \
-    (*(p_array_ptr) = FreeList_Alloc(p_freelist, (isize_count) * sizeof((p_array_ptr)[0][0])))
-#define FreeList_AllocArrayNonZero(p_freelist, p_array_ptr, isize_count) \
-    (*(p_array_ptr) = FreeList_AllocNonZero(p_freelist, (isize_count) * sizeof((p_array_ptr)[0][0])))
-#define FreeList_ReallocArray(p_freelist, p_array_ptr, isize_count) \
-    (*(p_array_ptr) = FreeList_Realloc(p_freelist, *(p_array_ptr), (isize_count) * sizeof((p_array_ptr)[0][0])))
-#define FreeList_ReallocArrayNonZero(p_freelist, p_array_ptr, isize_count) \
-    (*(p_array_ptr) = FreeList_ReallocNonZero(p_freelist, *(p_array_ptr), (isize_count) * sizeof((p_array_ptr)[0][0])))
+/* freelist_alloc *p_freelist, array_member_type **pp_array, isize isize_count */
+#define FreeList_AllocArray(p_freelist, pp_array, isize_count) \
+    (*(pp_array) = FreeList_Alloc(p_freelist, (isize_count) * sizeof((pp_array)[0][0])))
+
+/* freelist_alloc *p_freelist, array_member_type **pp_array, isize isize_count */
+#define FreeList_AllocArrayNonZero(p_freelist, pp_array, isize_count) \
+    (*(pp_array) = FreeList_AllocNonZero(p_freelist, (isize_count) * sizeof((pp_array)[0][0])))
+
+/* freelist_alloc *p_freelist, array_member_type **pp_array, isize isize_count */
+#define FreeList_ReallocArray(p_freelist, pp_array, isize_count) \
+    (*(pp_array) = FreeList_Realloc(p_freelist, *(pp_array), (isize_count) * sizeof((pp_array)[0][0])))
+
+/* freelist_alloc *p_freelist, array_member_type **pp_array, isize isize_count */
+#define FreeList_ReallocArrayNonZero(p_freelist, pp_array, isize_count) \
+    (*(pp_array) = FreeList_ReallocNonZero(p_freelist, *(pp_array), (isize_count) * sizeof((pp_array)[0][0])))
 
 
 
