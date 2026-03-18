@@ -8,7 +8,6 @@ extern "C" {
 #define RENDERER_CORE_H
 
 #include "Common.h"
-#include "Memory.h"
 #include "Profiler.h"
 
 
@@ -259,8 +258,8 @@ struct renderer_resource_group_config
     isize CpuBufferPoolSizeBytes;
     isize UniformBufferSizeBytes;
 
-    u32 UniformBufferBinding;
-    u32 TextureArrayBinding;
+    u32 UniformBufferBinding;   /* must match in shader */
+    u32 TextureArrayBinding;    /* must match in shader */
 };
 
 struct renderer_sampler_config
@@ -332,12 +331,6 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
     const renderer_mesh_config *MeshConfig,
     const void *VertexBuffer,
     const u32 *IndexBuffer
-);
-
-renderer_uniform_buffer_handle Renderer_CreateUniformBuffer(
-    renderer_handle Renderer,
-    renderer_resource_group_handle ResourceGroup,
-    const renderer_uniform_buffer_config *UniformBufferConfig
 );
 
 renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(

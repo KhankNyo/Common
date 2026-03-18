@@ -130,6 +130,7 @@ internal VkSampler Vulkan_ResourceGroup_GetTexture(renderer *Vk, renderer_sample
 
 internal vk_mesh *Vulkan_ResourceGroup_GetMesh(renderer *Vk, renderer_mesh_handle Handle)
 {
+    (void)Vk;
     if (0 == Handle.Value)
     {
         ASSERT(Handle.Value != 0, "no default mesh");
@@ -2437,7 +2438,7 @@ internal void *Vulkan_ResourceGroup_AllocateRoutine(void *UserData, const memory
     return NULL;
 }
 
-internal void Vulkan_InitResourceGroup(renderer *Vk, vk_resource_group *ResourceGroup, const renderer_resource_group_config *Config)
+internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *ResourceGroup, const renderer_resource_group_config *Config)
 {
     VkDevice Device = Vulkan_GetDevice(Vk);
 
@@ -2524,13 +2525,13 @@ internal void Vulkan_InitResourceGroup(renderer *Vk, vk_resource_group *Resource
         VK_CHECK(vkCreateDescriptorPool(Device, &CreateInfo, NULL, &DescriptorPool));
     }
 
-    arena_alloc *Arena = &ResourceGroup->CpuArena;
+    /* descriptor sets and layout */
     VkDescriptorSetLayout DescriptorSetLayout;
     VkDescriptorSet *DescriptorSets;
+    arena_alloc *Arena = &ResourceGroup->CpuArena;
     Arena_AllocArray(Arena, &DescriptorSets, Vk->FramesInFlight);
     Arena_Scope(Arena)
     {
-        /* descriptor set layout */
         {
             VkDescriptorSetLayoutBinding Bindings[] = {
                 [0] = {
@@ -2578,7 +2579,7 @@ internal void Vulkan_InitResourceGroup(renderer *Vk, vk_resource_group *Resource
     ResourceGroup->DescriptorSets = DescriptorSets;
 }
 
-internal void Vulkan_DeinitResourceGroup(renderer *Vk, vk_resource_group *ResourceGroup)
+internal void Vulkan_ResourceGroup_Deinit(renderer *Vk, vk_resource_group *ResourceGroup)
 {
     /* NOTE: Might not need to wait for the device to become idle? */
     VkDevice Device = Vulkan_GetDevice(Vk);
@@ -2632,7 +2633,7 @@ renderer_resource_group_handle Renderer_CreateResourceGroup(
             Next->Prev = Prev;
     }
 
-    Vulkan_InitResourceGroup(Vk, ResourceGroup, Config);
+    Vulkan_ResourceGroup_Init(Vk, ResourceGroup, Config);
 
     /* link list */
     if (NULL == Vk->ResourceGroupHead)
@@ -2674,7 +2675,7 @@ void Renderer_DestroyResourceGroup(
         Next->Prev = Prev;
     }
 
-    Vulkan_DeinitResourceGroup(Vk, ResourceGroup);
+    Vulkan_ResourceGroup_Deinit(Vk, ResourceGroup);
 
     /* put in free list */
     {
@@ -3489,6 +3490,14 @@ void Renderer_Destroy(renderer *Vk)
     vk_frame_data *Frame = &Vk->FrameData;
     vkDeviceWaitIdle(Device);
 
+#ifdef NEW_API
+    for (vk_resource_group *ResourceGroup = Vk->ResourceGroupHead;
+        ResourceGroup;
+        ResourceGroup = ResourceGroup->Next)
+    {
+        Vulkan_ResourceGroup_Deinit(Vk, ResourceGroup);
+    }
+#else
     for (int i = 0; i < Vk->TextureArray.Count; i++)
     {
         vk_texture *Texture = Vk->TextureArray.Data + i;
@@ -3508,6 +3517,7 @@ void Renderer_Destroy(renderer *Vk)
     }
     vkDestroyDescriptorPool(Device, Vk->DescriptorPool, NULL);
     vkDestroyDescriptorSetLayout(Device, Vk->DescriptorSetLayout, NULL);
+#endif
     /* nothing to do, Vkm_Destroy will deallocate all buffers */
     Vulkan_DestroySwapchain(Device, &Vk->Swapchain); 
     Vulkan_DestroySwapchainImageAndFramebuffer(Device, &Vk->SwapchainImage, true);
