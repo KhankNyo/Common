@@ -227,6 +227,24 @@ void Renderer_UpdateUniformBuffer(
 #define RENDERER_GLOBAL_RESOURCE_GROUP (renderer_resource_group_handle) { 0 }
 #define RENDERER_DEFAULT_SAMPLER (renderer_sampler_handle) { 0 }
 
+/*
+ Op order: 
+    Renderer_CreateResourceGroup()
+        Renderer_CreateSampler()
+            Renderer_CreateStaticTexture()
+            Renderer_CreateMutableTexture()
+        Renderer_CreateStaticMesh()
+        Renderer_CreateMutableMesh()
+    Renderer_BindResourceGroup()
+    Renderer_CreateGraphicsPipeline()
+
+    Renderer_UpdateMutableMesh();
+    Renderer_UpdateMutableTexture();
+    Renderer_UpdateUniformBuffer();
+    Renderer_Draw();
+
+*/
+
 typedef enum 
 {
     RENDERER_FILTER_NEAREST = 0,
@@ -240,6 +258,9 @@ struct renderer_resource_group_config
     isize GpuBufferPoolSizeBytes;
     isize CpuBufferPoolSizeBytes;
     isize UniformBufferSizeBytes;
+
+    u32 UniformBufferBinding;
+    u32 TextureArrayBinding;
 };
 
 struct renderer_sampler_config
@@ -264,11 +285,6 @@ struct renderer_mesh_config
     isize IndexCount;
 };
 
-struct renderer_uniform_buffer_config
-{
-    isize CapacityBytes;
-};
-
 
 
 renderer_resource_group_handle Renderer_CreateResourceGroup(
@@ -279,11 +295,10 @@ void Renderer_DestroyResourceGroup(
     renderer_handle Renderer, 
     renderer_resource_group_handle ResourceGroup
 );
-void Renderer_UpdateResourceGroup(
+void Renderer_BindResourceGroup(
     renderer_handle Renderer,
     renderer_resource_group_handle ResourceGroup
 );
-
 
 renderer_sampler_handle Renderer_CreateSampler(
     renderer_handle Renderer, 
@@ -426,8 +441,6 @@ force_inline void Renderer__InitDefaultResources(renderer_handle Renderer)
         renderer_graphics_pipeline_handle GraphicsPipeline = Renderer_CreateGraphicsPipeline(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &Config);
         (void)GraphicsPipeline;
     }
-
-    Renderer_UpdateResourceGroup(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP);
 }
 
 #endif

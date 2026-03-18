@@ -137,6 +137,18 @@ internal vk_mesh *Vulkan_ResourceGroup_GetMesh(renderer *Vk, renderer_mesh_handl
     return (vk_mesh *)Handle.Value;
 }
 
+internal vk_graphics_pipeline *Vulkan_ResourceGroup_GetGraphicsPipeline(renderer *Vk, renderer_graphics_pipeline_handle Handle)
+{
+    if (0 == Handle.Value)
+    {
+        ASSERT(Vk->GlobalResourceGroup && Vk->GlobalResourceGroup->GraphicsPipelines.Count >= 1);
+        return &Vk->GlobalResourceGroup->GraphicsPipelines.Data[Handle.Value];
+    }
+    vk_resource_group_and_index Result = Vulkan_ResourceGroup_ExtractHandle(Handle.Value);
+    ASSERT(Result.Handle < Result.ResourceGroup->GraphicsPipelines.Count, "Invalid handle");
+    return &Result.ResourceGroup->GraphicsPipelines.Data[Result.Handle];
+}
+
 #endif
 
 
@@ -1561,7 +1573,7 @@ internal void Vulkan_RecordCommandBuffer(
             {
                 const renderer_draw_pipeline *DrawPipeline = Pipelines + i;
 #ifdef NEW_API
-                const vk_graphics_pipeline *Pipeline = DrawPipeline->GraphicsPipelineHandle.Value;
+                const vk_graphics_pipeline *Pipeline = Vulkan_ResourceGroup_GetGraphicsPipeline(Vk, DrawPipeline->GraphicsPipelineHandle);
 #else
                 const vk_graphics_pipeline *Pipeline = &Vk->GraphicsPipelines.Data[
                     DrawPipeline->GraphicsPipelineHandle.Value
@@ -1575,7 +1587,7 @@ internal void Vulkan_RecordCommandBuffer(
                 {
                     const renderer_draw_pipeline_group *Group = DrawPipeline->Groups + k;
 #if defined(NEW_API)
-                    const vk_mesh *Mesh = Group->MeshHandle.Value;
+                    const vk_mesh *Mesh = Vulkan_ResourceGroup_GetMesh(Vk, Group->MeshHandle);
 #else
                     const vk_mesh *Mesh = &Vk->MeshArray.Data[Group->MeshHandle.Value];
 #endif
@@ -1593,7 +1605,7 @@ internal void Vulkan_RecordCommandBuffer(
 
                     vkCmdSetScissor(CmdBuffer, 0, 1, &Scissor);
 #ifdef NEW_API
-                    ASSERT(Mesh->IndexCount, "handle: %p", Group->MeshHandle.Value);
+                    ASSERT(Mesh->IndexCount, "handle: %llu", (long long unsigned)Group->MeshHandle.Value);
 #else
                     ASSERT(Mesh->IndexCount, "handle: %d", Group->MeshHandle.Value);
 #endif
@@ -2103,7 +2115,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
     renderer *Vk;
     {
         arena_alloc TmpArena; 
-        platform_allocator Alloc = Platform_Get(Allocator);
+        memory_alloc_interface Alloc = Platform_Get(Allocator);
 
         // FUCK YOU GCC, why movaps????
         // movaps and movups have the SAME PERFORMANCE on pretty much all modern x86 processors
@@ -2220,34 +2232,8 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
 
     /* create descriptor layouts and sets */
     {
-        uint UniformBufferBinding = 0;
-        uint TextureSamplerBinding = 1;
         uint TextureSamplerCountMax = 1u << 12;
         uint UniformBufferCountMax = 1u << 12;
-        VkDescriptorSetLayout DescriptorSetLayout;
-        {
-            VkDescriptorSetLayoutBinding Bindings[] = {
-                [0] = {
-                    .binding = UniformBufferBinding,
-                    .descriptorCount = UniformBufferCountMax,
-                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                    .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-                },
-                [1] = {
-                    .binding = TextureSamplerBinding,
-                    .descriptorCount = TextureSamplerCountMax,
-                    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-                },
-            };
-            VkDescriptorSetLayoutCreateInfo CreateInfo = {
-                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                .bindingCount = STATIC_ARRAY_SIZE(Bindings),
-                .pBindings = Bindings,
-            };
-            VK_CHECK(vkCreateDescriptorSetLayout(Device, &CreateInfo, NULL, &DescriptorSetLayout));
-        }
-
         VkDescriptorPool DescriptorPool;
         {
             VkDescriptorPoolSize PoolSizes[] = {
@@ -2273,7 +2259,6 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
         }
 
         Vk->DescriptorPool = DescriptorPool;
-        Vk->DescriptorSetLayout = DescriptorSetLayout;
     }
 
     /* create render target  */
@@ -2406,15 +2391,6 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
 
 
 
-void Renderer_UpdateUniformBuffer(renderer *Vk, const void *Data, isize SizeBytes) 
-{
-    /* don't actually update now because the uniform might be in use by the gpu, 
-     * wait until draw time to update, for now copy it into a tmp buffer */
-    ASSERT(SizeBytes <= Vk->UniformBuffer.Capacity, "Data too big for uniform buffer");
-    memcpy(Vk->UniformBuffer.Data, Data, SizeBytes);
-    Vk->UniformBuffer.Count = SizeBytes;
-    Vk->ShouldUpdateUniformBuffer = true;
-}
 
 
 
@@ -2441,7 +2417,168 @@ internal u32 Vulkan_ResourceGroup_PushGraphicsPipeline(vk_resource_group *Resour
     return Index;
 }
 
-internal void Vulkan_DestroyResourceGroup(renderer *Vk, vk_resource_group *ResourceGroup)
+internal void *Vulkan_ResourceGroup_AllocateRoutine(void *UserData, const memory_alloc_parameter *Param)
+{
+    arena_alloc *Arena = UserData;
+    switch (Param->Mode)
+    {
+    case ALLOCATOR_ALLOCATE:
+    {
+        void *Ptr = 0;
+        Arena_ScopedAlignment(Arena, Param->As.Allocate.Alignment)
+        {
+            Ptr = Arena_Alloc(Arena, Param->As.Allocate.SizeBytes);
+        }
+        return Ptr;
+    } break;
+    case ALLOCATOR_FREE:
+        break;
+    }
+    return NULL;
+}
+
+internal void Vulkan_InitResourceGroup(renderer *Vk, vk_resource_group *ResourceGroup, const renderer_resource_group_config *Config)
+{
+    VkDevice Device = Vulkan_GetDevice(Vk);
+
+    /* allocators */
+    {
+        isize BufferPoolSizeBytes[] = {
+            [VKM_MEMORY_TYPE_CPU_VISIBLE] = Config->CpuBufferPoolSizeBytes,
+            [VKM_MEMORY_TYPE_GPU_LOCAL] = Config->GpuBufferPoolSizeBytes,
+        };
+        Vkm_Create(&ResourceGroup->GpuAllocator,
+            Device,
+            Vulkan_GetPhysicalDevice(Vk),
+            Config->ImagePoolSizeBytes,
+            BufferPoolSizeBytes, 
+            Vk->GpuBufferUsageFlags,
+            Vk->GpuMemoryProperties
+        );
+
+        int Alignment = 8;
+        Arena_Create(&ResourceGroup->CpuArena, Vk->Arena.UserAlloc, Config->CpuBufferPoolSizeBytes, Alignment);
+        memory_alloc_interface ArenaInterface = {
+            .UserData = &ResourceGroup->CpuArena,
+            .Routine = Vulkan_ResourceGroup_AllocateRoutine,
+        };
+        FreeList_Create(&ResourceGroup->CpuAllocator, ArenaInterface, Config->CpuBufferPoolSizeBytes/2, Alignment);
+    }
+
+    if (Vk->GlobalResourceGroup)
+    {
+        ASSERT(Vk->GlobalResourceGroup->Samplers.Count >= 1);
+        ASSERT(Vk->GlobalResourceGroup->GraphicsPipelines.Count >= 1);
+        ASSERT(Vk->GlobalResourceGroup->Textures.Count >= 1);
+        /* NOTE: handle 0 is always the first global handle */
+        Vulkan_ResourceGroup_PushSampler(ResourceGroup, Vk->GlobalResourceGroup->Samplers.Data[0]);
+        Vulkan_ResourceGroup_PushTexture(ResourceGroup, &Vk->GlobalResourceGroup->Textures.Data[0]);
+        Vulkan_ResourceGroup_PushGraphicsPipeline(ResourceGroup, &Vk->GlobalResourceGroup->GraphicsPipelines.Data[0]);
+    }
+
+    /* uniform buffer */
+    {
+        FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBuffers, Vk->FramesInFlight);
+        FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBuffersMapped, Vk->FramesInFlight);
+        FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBufferTmp, Config->UniformBufferSizeBytes);
+        ResourceGroup->UniformBufferTmpCapacity = Config->UniformBufferSizeBytes;
+        for (int i = 0; i < Vk->FramesInFlight; i++)
+        {
+            ResourceGroup->UniformBuffers[i] = Vkm_CreateBuffer(
+                &ResourceGroup->GpuAllocator, 
+                VKM_MEMORY_TYPE_CPU_VISIBLE, 
+                Config->UniformBufferSizeBytes
+            );
+            ResourceGroup->UniformBuffersMapped[i] = Vkm_Buffer_GetMappedMemory(
+                &ResourceGroup->GpuAllocator, 
+                ResourceGroup->UniformBuffers[i]
+            );
+        }
+    }
+
+
+    /* descriptor pool */
+    VkDescriptorPool DescriptorPool;
+    {
+        int UniformBufferDescriptorMaxCount = 1;
+        int TextureDescriptorMaxCount = VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT;
+        VkDescriptorPoolSize PoolSizes[] = {
+            [0] = {
+                .descriptorCount = Vk->FramesInFlight * UniformBufferDescriptorMaxCount,
+                .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            },
+            [1] = {
+                .descriptorCount = Vk->FramesInFlight * TextureDescriptorMaxCount,
+                .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            },
+        };
+
+        int MaxDescriptorCount = (UniformBufferDescriptorMaxCount + TextureDescriptorMaxCount) * Vk->FramesInFlight;
+        VkDescriptorPoolCreateInfo CreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .poolSizeCount = STATIC_ARRAY_SIZE(PoolSizes),
+            .pPoolSizes = PoolSizes,
+            .maxSets = MaxDescriptorCount,
+            .flags = 0,
+        };
+        VK_CHECK(vkCreateDescriptorPool(Device, &CreateInfo, NULL, &DescriptorPool));
+    }
+
+    arena_alloc *Arena = &ResourceGroup->CpuArena;
+    VkDescriptorSetLayout DescriptorSetLayout;
+    VkDescriptorSet *DescriptorSets;
+    Arena_AllocArray(Arena, &DescriptorSets, Vk->FramesInFlight);
+    Arena_Scope(Arena)
+    {
+        /* descriptor set layout */
+        {
+            VkDescriptorSetLayoutBinding Bindings[] = {
+                [0] = {
+                    .binding = Config->UniformBufferBinding,
+                    .descriptorCount = 1,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                    .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                },
+                [1] = {
+                    .binding = Config->TextureArrayBinding,
+                    .descriptorCount = ResourceGroup->Textures.Count,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                },
+            };
+            VkDescriptorSetLayoutCreateInfo CreateInfo = {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .bindingCount = STATIC_ARRAY_SIZE(Bindings),
+                .pBindings = Bindings,
+            };
+            VK_CHECK(vkCreateDescriptorSetLayout(Device, &CreateInfo, NULL, &DescriptorSetLayout));
+        }
+
+        /* alloc descriptor set */
+
+        VkDescriptorSetLayout *DescriptorSetLayouts;
+        Arena_AllocArray(Arena, &DescriptorSetLayouts, Vk->FramesInFlight);
+        for (int i = 0; i < Vk->FramesInFlight; i++)
+        {
+            DescriptorSetLayouts[i] = DescriptorSetLayout;
+        }
+        VkDescriptorSetAllocateInfo AllocInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = DescriptorPool,
+            .descriptorSetCount = Vk->FramesInFlight,
+            .pSetLayouts = DescriptorSetLayouts,
+        };
+        VK_CHECK(vkAllocateDescriptorSets(Device, &AllocInfo, DescriptorSets));
+    }
+
+    ResourceGroup->TextureArrayBinding = Config->TextureArrayBinding;
+    ResourceGroup->UniformBufferBinding = Config->UniformBufferBinding;
+    ResourceGroup->DescriptorPool = DescriptorPool;
+    ResourceGroup->DescriptorSetLayout = DescriptorSetLayout;
+    ResourceGroup->DescriptorSets = DescriptorSets;
+}
+
+internal void Vulkan_DeinitResourceGroup(renderer *Vk, vk_resource_group *ResourceGroup)
 {
     /* NOTE: Might not need to wait for the device to become idle? */
     VkDevice Device = Vulkan_GetDevice(Vk);
@@ -2460,10 +2597,14 @@ internal void Vulkan_DestroyResourceGroup(renderer *Vk, vk_resource_group *Resou
         vkDestroyPipeline(Device, ResourceGroup->GraphicsPipelines.Data[i].Handle, NULL);
         vkDestroyPipelineLayout(Device, ResourceGroup->GraphicsPipelines.Data[i].Layout, NULL);
     }
+    vkDestroyDescriptorSetLayout(Device, ResourceGroup->DescriptorSetLayout, NULL);
+    vkDestroyDescriptorPool(Device, ResourceGroup->DescriptorPool, NULL);
 
-    FreeList_Destroy(&ResourceGroup->CpuAllocator);
+    Arena_Destroy(&ResourceGroup->CpuArena);
+    /* NOTE: don't need to destroy the free list since the arena owns it */
     Vkm_Reset(&ResourceGroup->GpuAllocator);
 }
+
 
 renderer_resource_group_handle Renderer_CreateResourceGroup(
     renderer *Vk, 
@@ -2491,56 +2632,7 @@ renderer_resource_group_handle Renderer_CreateResourceGroup(
             Next->Prev = Prev;
     }
 
-    /* initialize members */
-    {
-        isize BufferPoolSizeBytes[] = {
-            [VKM_MEMORY_TYPE_CPU_VISIBLE] = Config->CpuBufferPoolSizeBytes,
-            [VKM_MEMORY_TYPE_GPU_LOCAL] = Config->GpuBufferPoolSizeBytes,
-        };
-        Vkm_Create(&ResourceGroup->GpuAllocator,
-            Vulkan_GetDevice(Vk),
-            Vulkan_GetPhysicalDevice(Vk),
-            Config->ImagePoolSizeBytes,
-            BufferPoolSizeBytes, 
-            Vk->GpuBufferUsageFlags,
-            Vk->GpuMemoryProperties
-        );
-
-        int Alignment = 8;
-        FreeList_Create(&ResourceGroup->CpuAllocator, Vk->Arena.UserAlloc, Config->CpuBufferPoolSizeBytes, Alignment);
-
-        if (Vk->GlobalResourceGroup)
-        {
-            ASSERT(Vk->GlobalResourceGroup->Samplers.Count >= 1);
-            ASSERT(Vk->GlobalResourceGroup->GraphicsPipelines.Count >= 1);
-            ASSERT(Vk->GlobalResourceGroup->Textures.Count >= 1);
-            /* NOTE: handle 0 is always the first global handle */
-            Vulkan_ResourceGroup_PushSampler(ResourceGroup, Vk->GlobalResourceGroup->Samplers.Data[0]);
-            Vulkan_ResourceGroup_PushTexture(ResourceGroup, &Vk->GlobalResourceGroup->Textures.Data[0]);
-            Vulkan_ResourceGroup_PushGraphicsPipeline(ResourceGroup, &Vk->GlobalResourceGroup->GraphicsPipelines.Data[0]);
-        }
-
-        if (Config->UniformBufferSizeBytes > 0)
-        {
-            FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBuffers, Vk->FramesInFlight);
-            FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBuffersMapped, Vk->FramesInFlight);
-            FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBufferTmp, Config->UniformBufferSizeBytes);
-            ResourceGroup->UniformBufferTmpCapacity = Config->UniformBufferSizeBytes;
-            ResourceGroup->UniformBufferCount = Vk->FramesInFlight;
-            for (int i = 0; i < Vk->FramesInFlight; i++)
-            {
-                ResourceGroup->UniformBuffers[i] = Vkm_CreateBuffer(
-                    &ResourceGroup->GpuAllocator, 
-                    VKM_MEMORY_TYPE_CPU_VISIBLE, 
-                    Config->UniformBufferSizeBytes
-                );
-                ResourceGroup->UniformBuffersMapped[i] = Vkm_Buffer_GetMappedMemory(
-                    &ResourceGroup->GpuAllocator, 
-                    ResourceGroup->UniformBuffers[i]
-                );
-            }
-        }
-    }
+    Vulkan_InitResourceGroup(Vk, ResourceGroup, Config);
 
     /* link list */
     if (NULL == Vk->ResourceGroupHead)
@@ -2582,7 +2674,7 @@ void Renderer_DestroyResourceGroup(
         Next->Prev = Prev;
     }
 
-    Vulkan_DestroyResourceGroup(Vk, ResourceGroup);
+    Vulkan_DeinitResourceGroup(Vk, ResourceGroup);
 
     /* put in free list */
     {
@@ -2594,24 +2686,69 @@ void Renderer_DestroyResourceGroup(
     }
 }
 
-void Renderer_UpdateResourceGroup(
+void Renderer_BindResourceGroup(
     renderer *Vk, 
     renderer_resource_group_handle ResourceGroupHandle
 ) {
+    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle);
     VkDevice Device = Vulkan_GetDevice(Vk);
     /* TODO: not wait until the gpu is in idle state? */
     vkDeviceWaitIdle(Device);
 
-    /* TODO: alloc descritor sets, update descriptor sets */
-    VkDescriptorSetAllocateInfo AllocInfo = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-    };
-    VkDescriptorSet *DescriptorSets = NULL;
-    VK_CHECK(vkAllocateDescriptorSets(Device, &AllocInfo, DescriptorSets));
-    VkWriteDescriptorSet Write = {
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-    };
-    vkUpdateDescriptorSets(Device, 1, &Write, 0, NULL);
+    /* udpate descriptor set */
+    arena_alloc *Arena = &ResourceGroup->CpuArena;
+    Arena_Scope(Arena)
+    {
+        ASSERT(ResourceGroup->Textures.Count <= VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT);
+        /* update/write descriptor sets */
+
+        VkDescriptorImageInfo *TextureDescriptors;
+        Arena_AllocArray(Arena, &TextureDescriptors, ResourceGroup->Textures.Count);
+        for (int i = 0; i < ResourceGroup->Textures.Count; i++)
+        {
+            vk_texture *Texture = &ResourceGroup->Textures.Data[i];
+            TextureDescriptors[i] = (VkDescriptorImageInfo) {
+                .sampler = Texture->SamplerReference,
+                .imageView = Texture->ImageView,
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            };
+        }
+
+        VkDescriptorBufferInfo *UniformBufferDescriptors;
+        for (int i = 0; i < Vk->FramesInFlight; i++)
+        {
+            UniformBufferDescriptors[i] = (VkDescriptorBufferInfo) {
+                .buffer = Vkm_Buffer_GetVkBuffer(&ResourceGroup->GpuAllocator, ResourceGroup->UniformBuffers[i]),
+                .offset = Vkm_Buffer_GetOffsetBytes(ResourceGroup->UniformBuffers[i]),
+                .range = Vkm_Buffer_GetSizeBytes(ResourceGroup->UniformBuffers[i]),
+            };
+        }
+
+        for (int i = 0; i < Vk->FramesInFlight; i++)
+        {
+            VkWriteDescriptorSet Writes[] = {
+                [0] = {
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                    .descriptorCount = 1,
+                    .pBufferInfo = &UniformBufferDescriptors[i],
+                    .dstSet = ResourceGroup->DescriptorSets[i],
+                    .dstBinding = ResourceGroup->UniformBufferBinding,
+                    .dstArrayElement = 0,
+                },
+                [1] = {
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    .descriptorCount = ResourceGroup->Textures.Count,
+                    .pImageInfo = TextureDescriptors,
+                    .dstSet = ResourceGroup->DescriptorSets[i],
+                    .dstBinding = ResourceGroup->TextureArrayBinding,
+                    .dstArrayElement = 0,
+                },
+            };
+            vkUpdateDescriptorSets(Device, STATIC_ARRAY_SIZE(Writes), Writes, 0, NULL);
+        }
+    }
 }
 
 
@@ -2914,7 +3051,7 @@ renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
                 Device, 
                 RenderPass, 
                 &VkConfig, 
-                &Vk->DescriptorSetLayout, 1,
+                &ResourceGroup->DescriptorSetLayout, 1,
                 Config->VertShaderCode,
                 Config->VertShaderCodeSizeBytes,
                 Config->FragShaderCode,
@@ -3312,6 +3449,16 @@ void Renderer_CreateGraphicsPipelines(
             );
         }
     }
+}
+
+void Renderer_UpdateUniformBuffer(renderer *Vk, const void *Data, isize SizeBytes) 
+{
+    /* don't actually update now because the uniform might be in use by the gpu, 
+     * wait until draw time to update, for now copy it into a tmp buffer */
+    ASSERT(SizeBytes <= Vk->UniformBuffer.Capacity, "Data too big for uniform buffer");
+    memcpy(Vk->UniformBuffer.Data, Data, SizeBytes);
+    Vk->UniformBuffer.Count = SizeBytes;
+    Vk->ShouldUpdateUniformBuffer = true;
 }
 #endif
 

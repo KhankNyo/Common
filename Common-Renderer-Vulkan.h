@@ -2,26 +2,30 @@
 #define COMMON_RENDERER_VULKAN_H
 
 #include "Common.h"
-#include "Memory.h"
 #include "Renderer-Core.h"
 #include "Profiler.h"
 #include "Slice.h"
 
+#include "Memory.h"
 #include "FreeList.h"
+#include "Arena.h"
 
 #include "Common-Vulkan.h"
 #include "Common-Renderer-Vulkan-VkMalloc.h"
 
 
 /* TODO: move this somewhere else */
+#define VkDynamicArray_ResizeCapacity(p_freelist, p_da, isize_new_capacity) do {\
+    isize new_capacity_ = isize_new_capacity;\
+    typeof(p_da) dynamic_array_ = p_da;\
+    FreeList_ReallocArray(freelist_, &dynamic_array_->Data, new_capacity_);\
+    dynamic_array_->Capacity = new_capacity_;\
+} while (0)
 #define VkDynamicArray_Push(p_freelist, p_da, ...) do {\
     typeof(p_freelist) freelist_ = p_freelist;\
     typeof(p_da) dynamic_array_ = p_da;\
     if (dynamic_array_->Count >= dynamic_array_->Capacity) {\
-        /* resize */\
-        isize NewCapacity = dynamic_array_->Capacity == 0? 8 : dynamic_array_->Capacity * 2;\
-        FreeList_ReallocArray(freelist_, &dynamic_array_->Data, NewCapacity);\
-        dynamic_array_->Capacity = NewCapacity;\
+        VkDynamicArray_ResizeCapacity(freelist_, dynamic_array_, dynamic_array_->Capacity == 0? 8 : dynamic_array_->Capacity * 2);\
     }\
     dynamic_array_->Data[dynamic_array_->Count] = __VA_ARGS__;\
     dynamic_array_->Count++;\
@@ -131,17 +135,27 @@ struct vk_resource_group
 {
     vk_resource_group *Next, *Prev;
     vkm GpuAllocator;
-    freelist_alloc CpuAllocator;
+    arena_alloc CpuArena;
+    freelist_alloc CpuAllocator; /* NOTE: free list is owned by the arena */
 
     /* samplers and textures are owned by the GpuAllocator */
     dynamic_array(VkSampler) Samplers;
     dynamic_array(vk_texture) Textures;
     dynamic_array(vk_graphics_pipeline) GraphicsPipelines;
+
+    u32 UniformBufferBinding;
+    u32 TextureArrayBinding;
+
+    /* NOTE: there are Vk->FramesInFlight amount of uniform buffers */
     vkm_buffer *UniformBuffers;
     void **UniformBuffersMapped;
     u8 *UniformBufferTmp;
     i32 UniformBufferTmpCapacity;
-    i32 UniformBufferCount;
+
+    VkDescriptorPool DescriptorPool;
+    VkDescriptorSetLayout DescriptorSetLayout;
+    /* NOTE: there are Vk->FramesInFlight amount of DescriptorSets */
+    VkDescriptorSet *DescriptorSets;
 #if 0
     vk_sampler_list_array Samplers;
     vk_texture_list_array Textures;
@@ -201,7 +215,9 @@ struct renderer
     dynamic_array(vk_graphics_pipeline) GraphicsPipelines;
 
     VkCommandPool CommandPool;
+#ifndef NEW_API
     VkDescriptorSetLayout DescriptorSetLayout;
+#endif
     VkDescriptorPool DescriptorPool;
     struct vk_frame_data
     {
