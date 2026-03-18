@@ -2441,7 +2441,7 @@ internal u32 Vulkan_ResourceGroup_PushGraphicsPipeline(vk_resource_group *Resour
     return Index;
 }
 
-internal void Vulkan_ResetResourceGroup(renderer *Vk, vk_resource_group *ResourceGroup)
+internal void Vulkan_DestroyResourceGroup(renderer *Vk, vk_resource_group *ResourceGroup)
 {
     /* NOTE: Might not need to wait for the device to become idle? */
     VkDevice Device = Vulkan_GetDevice(Vk);
@@ -2461,9 +2461,7 @@ internal void Vulkan_ResetResourceGroup(renderer *Vk, vk_resource_group *Resourc
         vkDestroyPipelineLayout(Device, ResourceGroup->GraphicsPipelines.Data[i].Layout, NULL);
     }
 
-    ResourceGroup->Samplers.Count = 1;
-    ResourceGroup->Textures.Count = 1;
-    ResourceGroup->GraphicsPipelines.Count = 1;
+    FreeList_Destroy(&ResourceGroup->CpuAllocator);
     Vkm_Reset(&ResourceGroup->GpuAllocator);
 }
 
@@ -2471,56 +2469,81 @@ renderer_resource_group_handle Renderer_CreateResourceGroup(
     renderer *Vk, 
     const renderer_resource_group_config *Config
 ) {
-    vk_resource_group *ResourceGroup = NULL;
-    if (!Vk->ResourceGroupFreeHead)
+    vk_resource_group *ResourceGroup = Vk->ResourceGroupFreeSlots;
+    if (NULL == Vk->ResourceGroupFreeSlots)
     {
-        /* create new group */
+        /* create a new group */
         Arena_ScopedAlignment(&Vk->Arena, VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT)
         {
             ResourceGroup = Arena_Alloc(&Vk->Arena, sizeof *ResourceGroup);
         }
-
-
-        /* initialize members */
-        {
-            isize BufferPoolSizeBytes[] = {
-                [VKM_MEMORY_TYPE_CPU_VISIBLE] = Config->CpuBufferPoolSizeBytes,
-                [VKM_MEMORY_TYPE_GPU_LOCAL] = Config->GpuBufferPoolSizeBytes,
-            };
-            Vkm_Create(&ResourceGroup->GpuAllocator,
-                Vulkan_GetDevice(Vk),
-                Vulkan_GetPhysicalDevice(Vk),
-                Config->ImagePoolSizeBytes,
-                BufferPoolSizeBytes, 
-                Vk->GpuBufferUsageFlags,
-                Vk->GpuMemoryProperties
-            );
-
-            int Alignment = 8;
-            FreeList_Create(&ResourceGroup->CpuAllocator, Vk->Arena.UserAlloc, Config->CpuBufferPoolSizeBytes, Alignment);
-
-            if (!Vk->GlobalResourceGroup)
-            {
-                ASSERT(Vk->GlobalResourceGroup->Samplers.Count >= 1);
-                ASSERT(Vk->GlobalResourceGroup->GraphicsPipelines.Count >= 1);
-                ASSERT(Vk->GlobalResourceGroup->Textures.Count >= 1);
-                /* NOTE: handle 0 is always the first global handle */
-                Vulkan_ResourceGroup_PushSampler(ResourceGroup, Vk->GlobalResourceGroup->Samplers.Data[0]);
-                Vulkan_ResourceGroup_PushTexture(ResourceGroup, &Vk->GlobalResourceGroup->Textures.Data[0]);
-                Vulkan_ResourceGroup_PushGraphicsPipeline(ResourceGroup, &Vk->GlobalResourceGroup->GraphicsPipelines.Data[0]);
-                Vk->GlobalResourceGroup = ResourceGroup;
-            }
-        }
     }
     else
     {
-        /* take from free list */
-        ResourceGroup = Vk->ResourceGroupFreeHead;
-        Vk->ResourceGroupFreeHead = ResourceGroup->Next;
+        /* use one from the free list */
+        vk_resource_group *Next = ResourceGroup->Next;
+        vk_resource_group *Prev = ResourceGroup->Prev;
+        if (Prev)
+            Prev->Next = Next;
+        else
+            Vk->ResourceGroupFreeSlots = Next;
+        if (Next)
+            Next->Prev = Prev;
+    }
+
+    /* initialize members */
+    {
+        isize BufferPoolSizeBytes[] = {
+            [VKM_MEMORY_TYPE_CPU_VISIBLE] = Config->CpuBufferPoolSizeBytes,
+            [VKM_MEMORY_TYPE_GPU_LOCAL] = Config->GpuBufferPoolSizeBytes,
+        };
+        Vkm_Create(&ResourceGroup->GpuAllocator,
+            Vulkan_GetDevice(Vk),
+            Vulkan_GetPhysicalDevice(Vk),
+            Config->ImagePoolSizeBytes,
+            BufferPoolSizeBytes, 
+            Vk->GpuBufferUsageFlags,
+            Vk->GpuMemoryProperties
+        );
+
+        int Alignment = 8;
+        FreeList_Create(&ResourceGroup->CpuAllocator, Vk->Arena.UserAlloc, Config->CpuBufferPoolSizeBytes, Alignment);
+
+        if (Vk->GlobalResourceGroup)
+        {
+            ASSERT(Vk->GlobalResourceGroup->Samplers.Count >= 1);
+            ASSERT(Vk->GlobalResourceGroup->GraphicsPipelines.Count >= 1);
+            ASSERT(Vk->GlobalResourceGroup->Textures.Count >= 1);
+            /* NOTE: handle 0 is always the first global handle */
+            Vulkan_ResourceGroup_PushSampler(ResourceGroup, Vk->GlobalResourceGroup->Samplers.Data[0]);
+            Vulkan_ResourceGroup_PushTexture(ResourceGroup, &Vk->GlobalResourceGroup->Textures.Data[0]);
+            Vulkan_ResourceGroup_PushGraphicsPipeline(ResourceGroup, &Vk->GlobalResourceGroup->GraphicsPipelines.Data[0]);
+        }
+
+        if (Config->UniformBufferSizeBytes > 0)
+        {
+            FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBuffers, Vk->FramesInFlight);
+            FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBuffersMapped, Vk->FramesInFlight);
+            FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBufferTmp, Config->UniformBufferSizeBytes);
+            ResourceGroup->UniformBufferTmpCapacity = Config->UniformBufferSizeBytes;
+            ResourceGroup->UniformBufferCount = Vk->FramesInFlight;
+            for (int i = 0; i < Vk->FramesInFlight; i++)
+            {
+                ResourceGroup->UniformBuffers[i] = Vkm_CreateBuffer(
+                    &ResourceGroup->GpuAllocator, 
+                    VKM_MEMORY_TYPE_CPU_VISIBLE, 
+                    Config->UniformBufferSizeBytes
+                );
+                ResourceGroup->UniformBuffersMapped[i] = Vkm_Buffer_GetMappedMemory(
+                    &ResourceGroup->GpuAllocator, 
+                    ResourceGroup->UniformBuffers[i]
+                );
+            }
+        }
     }
 
     /* link list */
-    if (Vk->ResourceGroupHead == NULL)
+    if (NULL == Vk->ResourceGroupHead)
     {
         Vk->ResourceGroupHead = ResourceGroup;
     }
@@ -2544,6 +2567,8 @@ void Renderer_DestroyResourceGroup(
     vk_resource_group *Next = ResourceGroup->Next;
     vk_resource_group *Prev = ResourceGroup->Prev;
     ASSERT(ResourceGroup != Vk->GlobalResourceGroup, "Cannot destroy global resource group.");
+
+    /* unlink */
     if (Prev)
     {
         Prev->Next = Next;
@@ -2557,24 +2582,36 @@ void Renderer_DestroyResourceGroup(
         Next->Prev = Prev;
     }
 
-    vk_resource_group *FreeHead = Vk->ResourceGroupFreeHead;
-    ResourceGroup->Next = FreeHead;
-    ResourceGroup->Prev = NULL;
-    if (FreeHead)
-    {
-        FreeHead->Prev = ResourceGroup;
-    }
-    Vk->ResourceGroupFreeHead = ResourceGroup;
+    Vulkan_DestroyResourceGroup(Vk, ResourceGroup);
 
-    Vulkan_ResetResourceGroup(Vk, ResourceGroup);
+    /* put in free list */
+    {
+        ResourceGroup->Prev = NULL;
+        ResourceGroup->Next = Vk->ResourceGroupFreeSlots;
+        if (Vk->ResourceGroupFreeSlots)
+            Vk->ResourceGroupFreeSlots->Prev = ResourceGroup;
+        Vk->ResourceGroupFreeSlots = ResourceGroup;
+    }
 }
 
 void Renderer_UpdateResourceGroup(
     renderer *Vk, 
     renderer_resource_group_handle ResourceGroupHandle
 ) {
+    VkDevice Device = Vulkan_GetDevice(Vk);
     /* TODO: not wait until the gpu is in idle state? */
-    vkDeviceWaitIdle(Vulkan_GetDevice(Vk));
+    vkDeviceWaitIdle(Device);
+
+    /* TODO: alloc descritor sets, update descriptor sets */
+    VkDescriptorSetAllocateInfo AllocInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+    };
+    VkDescriptorSet *DescriptorSets = NULL;
+    VK_CHECK(vkAllocateDescriptorSets(Device, &AllocInfo, DescriptorSets));
+    VkWriteDescriptorSet Write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+    };
+    vkUpdateDescriptorSets(Device, 1, &Write, 0, NULL);
 }
 
 

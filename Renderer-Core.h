@@ -21,7 +21,7 @@ typedef_struct(renderer_draw_pipeline);
 typedef_struct(renderer_draw_pipeline_group);
 typedef_struct(renderer_scissor);
 
-//#define NEW_API
+#define NEW_API
 
 #if !defined(NEW_API)
 typedef handle(u32) renderer_mesh_handle; 
@@ -33,11 +33,13 @@ typedef handle(u64) renderer_resource_group_handle;
 typedef handle(u64) renderer_sampler_handle;
 typedef handle(u64) renderer_mesh_handle;
 typedef handle(u64) renderer_texture_handle;
+typedef handle(u64) renderer_uniform_buffer_handle;
 
 typedef_struct(renderer_resource_group_config);
 typedef_struct(renderer_texture_config);
 typedef_struct(renderer_mesh_config);
 typedef_struct(renderer_sampler_config);
+typedef_struct(renderer_uniform_buffer_config);
 #endif
 
 
@@ -210,6 +212,16 @@ void Renderer_CreateGraphicsPipelines(
     renderer_graphics_pipeline_handle *OutGraphicsPipelines
 );
 
+/* call this whenever a uniform needs to be updated
+ * after Renderer_CreateGraphicsPipelines()
+ * */
+void Renderer_UpdateUniformBuffer(
+    renderer_handle Renderer, 
+    const void *Data, isize SizeBytes
+);
+
+
+
 #else
 
 #define RENDERER_GLOBAL_RESOURCE_GROUP (renderer_resource_group_handle) { 0 }
@@ -227,6 +239,7 @@ struct renderer_resource_group_config
     isize ImagePoolSizeBytes;
     isize GpuBufferPoolSizeBytes;
     isize CpuBufferPoolSizeBytes;
+    isize UniformBufferSizeBytes;
 };
 
 struct renderer_sampler_config
@@ -249,6 +262,11 @@ struct renderer_mesh_config
     isize VertexBufferElementSizeBytes;
     isize VertexCount;
     isize IndexCount;
+};
+
+struct renderer_uniform_buffer_config
+{
+    isize CapacityBytes;
 };
 
 
@@ -301,6 +319,12 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
     const u32 *IndexBuffer
 );
 
+renderer_uniform_buffer_handle Renderer_CreateUniformBuffer(
+    renderer_handle Renderer,
+    renderer_resource_group_handle ResourceGroup,
+    const renderer_uniform_buffer_config *UniformBufferConfig
+);
+
 renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
     renderer_handle Renderer,
     renderer_resource_group_handle ResourceGroupHandle,
@@ -322,6 +346,12 @@ void Renderer_UpdateMutableMesh(
     renderer_mesh_handle MutableMesh,
     const void *VertexBuffer, isize VertexCount, 
     const u32 *IndexBuffer, isize IndexCount
+);
+
+void Renderer_UpdateUniformBuffer(
+    renderer_handle Renderer,
+    renderer_uniform_buffer_handle UniformBuffer,
+    const void *Data, isize SizeBytes
 );
 
 
@@ -401,14 +431,6 @@ force_inline void Renderer__InitDefaultResources(renderer_handle Renderer)
 }
 
 #endif
-
-/* call this whenever a uniform needs to be updated
- * after Renderer_CreateGraphicsPipelines()
- * */
-void Renderer_UpdateUniformBuffer(
-    renderer_handle Renderer, 
-    const void *Data, isize SizeBytes
-);
 
 /* call on a specific event */
 void Renderer_OnFramebufferResize(renderer_handle Renderer, int Width, int Height);

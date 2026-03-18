@@ -137,6 +137,11 @@ struct vk_resource_group
     dynamic_array(VkSampler) Samplers;
     dynamic_array(vk_texture) Textures;
     dynamic_array(vk_graphics_pipeline) GraphicsPipelines;
+    vkm_buffer *UniformBuffers;
+    void **UniformBuffersMapped;
+    u8 *UniformBufferTmp;
+    i32 UniformBufferTmpCapacity;
+    i32 UniformBufferCount;
 #if 0
     vk_sampler_list_array Samplers;
     vk_texture_list_array Textures;
@@ -228,7 +233,7 @@ struct renderer
 
 #ifdef NEW_API
     vk_resource_group *ResourceGroupHead, 
-                      *ResourceGroupFreeHead, 
+                      *ResourceGroupFreeSlots, 
                       *GlobalResourceGroup;
 
     struct vk_render_target
