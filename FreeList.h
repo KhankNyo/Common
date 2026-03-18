@@ -12,7 +12,7 @@ typedef_struct(freelist__pool_header);
 
 struct freelist_alloc
 {
-    arena_user_allocator UserAlloc;
+    memory_alloc_interface UserAlloc;
     i64 DefaultPoolCapacityBytes;   /* should only be set once (during FreeList_Create()) */
     i32 Back;
     u32 Alignment;                  /* should only be set once (during FreeList_Create()) */
@@ -23,7 +23,7 @@ struct freelist_alloc
 
 
 
-void FreeList_Create(freelist_alloc *Allocator, arena_user_allocator UserAlloc, i64 PoolCapacityBytes, u32 Alignment);
+void FreeList_Create(freelist_alloc *Allocator, memory_alloc_interface UserAlloc, i64 PoolCapacityBytes, u32 Alignment);
 void FreeList_Destroy(freelist_alloc *Allocator);
 void FreeList_Reset(freelist_alloc *Allocator);
 
@@ -59,8 +59,6 @@ void FreeList_Free(freelist_alloc *Allocator, void *Ptr);
 
 #include <string.h> /* memset */
 
-#define FL__ALLOC(user_alloc, size_bytes, alignment) (user_alloc).Allocate((user_alloc).Data, size_bytes, alignment)
-#define FL__FREE(user_alloc, ptr) (user_alloc).Free((user_alloc).Data, ptr)
 #define FL__POOL_FREE_SPACE_CAP(p_alloc) (i64)((p_alloc)->DefaultPoolCapacity - sizeof(freelist__pool_header) - sizeof(freelist__header))
 #define FL__HEADER_FROM_PTR(p_alloc, ptr) ((freelist__header *)((u8 *)(ptr) - (p_alloc)->Back))
 
@@ -84,7 +82,7 @@ internal freelist__header *FreeList__FirstNodeFromPool(void *Pool, i64 PoolCapci
     u8 *PoolPtr = Pool;
     i64 FreeSpaceCapacity = PoolCapcityBytes - sizeof(freelist__pool_header) - sizeof(freelist__header);
     u8 *FreeSpace = (PoolPtr + sizeof(freelist__pool_header));
-    freelist__header *FreeSpaceHeader = Arena_AlignPointer(FreeSpace, alignment_of(freelist__header));
+    freelist__header *FreeSpaceHeader = Memory_AlignPointer(FreeSpace, alignment_of(freelist__header));
     *FreeSpaceHeader = (freelist__header) {
         .CapacityBytes = FreeSpaceCapacity,
     };
@@ -95,9 +93,9 @@ internal freelist__header *FreeList__FirstNodeFromPool(void *Pool, i64 PoolCapci
 internal void FreeList__PushNewPool(freelist_alloc *Allocator, i64 PoolCapcityBytes, freelist__header **OutFirstFreeHeader)
 {
     u32 Alignment = MAXIMUM(Allocator->Alignment, alignment_of(freelist__pool_header));
-    PoolCapcityBytes = Arena_AlignSize(PoolCapcityBytes, Alignment);
+    PoolCapcityBytes = Memory_AlignSize(PoolCapcityBytes, Alignment);
 
-    freelist__pool_header *Pool  = FL__ALLOC(Allocator->UserAlloc, PoolCapcityBytes, Alignment);
+    freelist__pool_header *Pool = Memory_Alloc(&Allocator->UserAlloc, PoolCapcityBytes, Alignment);
     Pool->Next = Allocator->Pool;
     Pool->CapacityBytes = PoolCapcityBytes;
     Allocator->Pool = Pool;
@@ -130,12 +128,12 @@ internal void FreeList__InsertFreeNode(freelist_alloc *Allocator, freelist__head
         Curr->Prev = FreeNode;
 }
 
-void FreeList_Create(freelist_alloc *Allocator, arena_user_allocator UserAlloc, i64 PoolCapacityBytes, u32 Alignment)
+void FreeList_Create(freelist_alloc *Allocator, memory_alloc_interface UserAlloc, i64 PoolCapacityBytes, u32 Alignment)
 {
     Alignment = MAXIMUM(Alignment, MAXIMUM(alignment_of(freelist__pool_header), alignment_of(freelist__header)));
-    PoolCapacityBytes = Arena_AlignSize(PoolCapacityBytes + sizeof(freelist__pool_header) + sizeof(freelist__header), Alignment);
+    PoolCapacityBytes = Memory_AlignSize(PoolCapacityBytes + sizeof(freelist__pool_header) + sizeof(freelist__header), Alignment);
 
-    isize AlignedHeaderSize = Arena_AlignSize(sizeof(freelist__header), Alignment);
+    isize AlignedHeaderSize = Memory_AlignSize(sizeof(freelist__header), Alignment);
     *Allocator = (freelist_alloc) {
         .UserAlloc = UserAlloc,
         .DefaultPoolCapacityBytes = PoolCapacityBytes,
@@ -147,12 +145,12 @@ void FreeList_Create(freelist_alloc *Allocator, arena_user_allocator UserAlloc, 
 
 void FreeList_Destroy(freelist_alloc *Allocator)
 {
-    arena_user_allocator UserAlloc = Allocator->UserAlloc;
+    memory_alloc_interface UserAlloc = Allocator->UserAlloc;
     freelist__pool_header *Pool = Allocator->Pool;
     while (Pool)
     {
         freelist__pool_header *Next = Pool->Next;
-        FL__FREE(UserAlloc, Pool);
+        Memory_Free(&UserAlloc, Pool);
         Pool = Next;
     }
 }
@@ -172,7 +170,7 @@ void FreeList_Reset(freelist_alloc *Allocator)
 void *FreeList_AllocNonZero(freelist_alloc *Allocator, i32 SizeBytes)
 {
     u32 Alignment = Allocator->Alignment;
-    i64 AlignedSizeBytes = Arena_AlignSize(SizeBytes, Alignment);
+    i64 AlignedSizeBytes = Memory_AlignSize(SizeBytes, Alignment);
 
     /* search free list */
     freelist__header *FreeNode = NULL;
@@ -231,7 +229,7 @@ void *FreeList_AllocNonZero(freelist_alloc *Allocator, i32 SizeBytes)
     }
 
     /* return aligned pointer */
-    void *Ptr = Arena_AlignPointer(FreeNode + 1, Alignment);
+    void *Ptr = Memory_AlignPointer(FreeNode + 1, Alignment);
     ASSERT((uintptr_t)Ptr + SizeBytes <= (uintptr_t)FreeNode + sizeof(*FreeNode) + FreeNode->CapacityBytes,
         "SizeBytes: %lli, AlignedSizeBytes: %lli, CapacityBytes: %lli", 
         (long long)SizeBytes, (long long)AlignedSizeBytes, (long long)FreeNode->CapacityBytes

@@ -7,7 +7,8 @@
 #endif
 
 #include "Common.h"
-#define MEMORY_IMPLEMENTATION
 #include "Memory.h"
+#define ARENA_IMPLEMENTATION
+#include "Arena.h"
 #define FREE_LIST_IMPLEMENTATION
 #include "FreeList.h"

@@ -3,10 +3,10 @@
 
 #include "Common.h"
 #include "Memory.h"
+#include "Arena.h"
 #include "Slice.h"
 
 
-typedef arena_user_allocator platform_allocator;
 typedef struct 
 {
     i32 Width, Height;
@@ -112,7 +112,7 @@ union platform_request_union {
     platform_window_dimensions WindowDimensions;
     platform_framebuffer_dimensions FramebufferDimensions;
     void *RendererFunctionLoader;
-    platform_allocator Allocator;
+    memory_alloc_interface Allocator;
     struct platform_mouse_position {
         double X, Y;
     } MousePosition;
@@ -136,13 +136,6 @@ typedef enum
     PLATFORM_FILE_TYPE_TEXT = 1, /* will null terminate */
 } platform_file_type;
 
-typedef enum 
-{
-    PLATFORM_ALLOCATOR_FLAG_COMMIT_ON_ALLOCATE = 1 << 0,
-    PLATFORM_ALLOCATOR_FLAG_ALL = 
-        PLATFORM_ALLOCATOR_FLAG_COMMIT_ON_ALLOCATE,
-} platform_allocator_flags;
-
 typedef handle(u64) platform_thread_handle;
 typedef void (*platform_thread_routine)(void *UserData);
 
@@ -161,12 +154,6 @@ void Platform_FatalErrorNoReturn(const char *ErrorMessage);
 
 platform_thread_handle Platform_ThreadCreate(void *UserData, platform_thread_routine Routine);
 void Platform_ThreadJoin(platform_thread_handle Handle);
-
-
-void Platform_Allocator_SetFlags(platform_allocator *Allocator, platform_allocator_flags Flags);
-void Platform_Allocator_RemoveFlags(platform_allocator *Allocator, platform_allocator_flags Flags);
-platform_allocator_flags Platform_Allocator_GetFlags(const platform_allocator *Allocator);
-
 
 
 

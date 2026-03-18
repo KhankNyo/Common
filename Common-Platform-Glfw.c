@@ -44,7 +44,6 @@ struct platform__allocator_data
     pthread_mutex_t Mutex;
 
     isize MemSizeAlloced;
-    platform_allocator_flags Flags;
     i32 AllocCount;
     i32 FreeCount;
 
@@ -302,7 +301,7 @@ int main(void)
     return 0;
 }
 
-void *Platform_AllocateMemory(void *UserData, isize SizeBytes, usize Alignment)
+void *Platform_Allocator_AllocateMemory(void *UserData, isize SizeBytes, usize Alignment)
 {
     (void)UserData;
     platform__allocator_data *Allocator = UserData;
@@ -314,11 +313,6 @@ void *Platform_AllocateMemory(void *UserData, isize SizeBytes, usize Alignment)
     ASSERT(Allocator->PoolSize < PoolCapacity, "Out of memory");
 
     int MapFlags = MAP_ANONYMOUS|MAP_PRIVATE;
-    if (Allocator->Flags & PLATFORM_ALLOCATOR_FLAG_COMMIT_ON_ALLOCATE)
-    {
-        MapFlags |= MAP_ANONYMOUS;
-    }
-
     u8 *Ptr = mmap(
         NULL, 
         TotalSizeBytes, 
@@ -364,7 +358,7 @@ void *Platform_AllocateMemory(void *UserData, isize SizeBytes, usize Alignment)
     return AlignedPtr;
 }
 
-void Platform_FreeMemory(void *UserData, void *Buffer)
+void Platform_Allocator_FreeMemory(void *UserData, void *Buffer)
 {
     if (NULL == Buffer)
         return;
@@ -400,6 +394,23 @@ void Platform_FreeMemory(void *UserData, void *Buffer)
         Allocator->PoolSize--;
     }
     pthread_mutex_unlock(&Allocator->Mutex);
+}
+
+internal void *Platform_Allocator_Routine(void *UserData, const memory_alloc_parameter *Param)
+{
+    switch (Param->Mode)
+    {
+    case ALLOCATOR_ALLOCATE:
+    {
+        return Platform_Allocator_AllocateMemory(UserData, Param->As.Allocate.SizeBytes, Param->As.Allocate.Alignment);
+    } break;
+    case ALLOCATOR_FREE:
+    {
+        Platform_Allocator_FreeMemory(UserData, Param->As.Free.Ptr);
+        return NULL;
+    } break;
+    }
+    UNREACHABLE();
 }
 
 platform_request_union *Platform_Request(platform_request_tag Tag, platform_request_union *Data)
@@ -489,10 +500,9 @@ platform_request_union *Platform_Request(platform_request_tag Tag, platform_requ
     } break;
     case PLATFORM_GET_Allocator:
     {
-        Data->Allocator = (platform_allocator) { 
-            .Data = g_AllocatorData,
-            .Allocate = Platform_AllocateMemory,
-            .Free = Platform_FreeMemory,
+        Data->Allocator = (memory_alloc_interface) { 
+            .UserData = g_AllocatorData,
+            .Routine = Platform_Allocator_Routine,
         };
     } break;
     case PLATFORM_GET_FramebufferDimensions:
@@ -591,23 +601,5 @@ platform_thread_handle Platform_ThreadCreate(void *UserData, platform_thread_rou
 void Platform_ThreadJoin(platform_thread_handle Handle)
 {
     pthread_join(Handle.Value, NULL);
-}
-
-void Platform_Allocator_SetFlags(platform_allocator *Allocator, platform_allocator_flags Flags)
-{
-    platform__allocator_data *AllocatorData = Allocator->Data;
-    AllocatorData->Flags |= Flags;
-}
-
-platform_allocator_flags Platform_Allocator_GetFlags(const platform_allocator *Allocator)
-{
-    const platform__allocator_data *AllocatorData = Allocator->Data;
-    return AllocatorData->Flags;
-}
-
-void Platform_Allocator_RemoveFlags(platform_allocator *Allocator, platform_allocator_flags Flags)
-{
-    platform__allocator_data *AllocatorData = Allocator->Data;
-    AllocatorData->Flags &= ~Flags;
 }
 
