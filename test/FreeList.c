@@ -42,12 +42,10 @@ internal bool32 CheckMem(const u8 *Ptr, u8 Byte, isize SizeBytes)
     return true;
 }
 
-internal void BasicTests(void)
+internal void BasicTests(freelist_alloc *Alloc)
 {
-    freelist_alloc Alloc;
-    FreeList_Create(&Alloc, g_StdAlloc, 64, 1);
     {
-        u8 *E = FreeList_Alloc(&Alloc, 16);
+        u8 *E = FreeList_Alloc(Alloc, 16);
         memset(E, 'e', 16);
         {
             u8 *D;
@@ -56,12 +54,12 @@ internal void BasicTests(void)
                 {
                     u8 *B; 
                     {
-                        u8 *A = FreeList_Alloc(&Alloc, 128);
+                        u8 *A = FreeList_Alloc(Alloc, 128);
                         {
                     /* NOTE: intentional indentation, B's lifetime starts here */
-                    B = FreeList_Alloc(&Alloc, 90);
+                    B = FreeList_Alloc(Alloc, 90);
                 /* NOTE: intentional indentation, C's lifetime starts here */
-                C = FreeList_Alloc(&Alloc, 16);
+                C = FreeList_Alloc(Alloc, 16);
                             memset(A, 'a', 128);
                             memset(B, 'b', 90);
                             memset(C, 'c', 16);
@@ -70,12 +68,12 @@ internal void BasicTests(void)
                             CHECK_MEM(C, 'c', 16);
                             CHECK_MEM(E, 'e', 16);
                         }
-                        FreeList_Free(&Alloc, A);
+                        FreeList_Free(Alloc, A);
                         CHECK_MEM(B, 'b', 90);
                         CHECK_MEM(C, 'c', 16);
                         CHECK_MEM(E, 'e', 16);
 
-                        B = FreeList_Realloc(&Alloc, B, 128);
+                        B = FreeList_Realloc(Alloc, B, 128);
                         CHECK_MEM(B, 'b', 90);
                         CHECK_MEM(C, 'c', 16);
                         CHECK_MEM(E, 'e', 16);
@@ -84,7 +82,7 @@ internal void BasicTests(void)
                         CHECK_MEM(C, 'c', 16);
                         CHECK_MEM(E, 'e', 16);
 
-                        C = FreeList_Realloc(&Alloc, C, 24);
+                        C = FreeList_Realloc(Alloc, C, 24);
                         CHECK_MEM(B, 'b', 128);
                         CHECK_MEM(C, 'c', 16);
                         CHECK_MEM(E, 'e', 16);
@@ -92,11 +90,11 @@ internal void BasicTests(void)
                         CHECK_MEM(B, 'b', 128);
                         CHECK_MEM(E, 'e', 16);
                     }
-                    FreeList_Free(&Alloc, B);
+                    FreeList_Free(Alloc, B);
                     CHECK_MEM(C, 'c', 24);
                     CHECK_MEM(E, 'e', 16);
 
-                    C = FreeList_Realloc(&Alloc, C, 32);
+                    C = FreeList_Realloc(Alloc, C, 32);
                     CHECK_MEM(C, 'c', 24);
                     CHECK_MEM(E, 'e', 16);
                     memset(C, 'c', 32);
@@ -104,14 +102,14 @@ internal void BasicTests(void)
                     CHECK_MEM(E, 'e', 16);
 
             /* NOTE: intentional indentation, D's lifetime starts here */
-            D = FreeList_Alloc(&Alloc, 16);
+            D = FreeList_Alloc(Alloc, 16);
                     CHECK_MEM(C, 'c', 32);
                     CHECK_MEM(E, 'e', 16);
                     memset(D, 'd', 16);
                     CHECK_MEM(C, 'c', 32);
                     CHECK_MEM(E, 'e', 16);
 
-                    C = FreeList_Realloc(&Alloc, C, 48);
+                    C = FreeList_Realloc(Alloc, C, 48);
                     CHECK_MEM(C, 'c', 32);
                     CHECK_MEM(D, 'd', 16);
                     CHECK_MEM(E, 'e', 16);
@@ -119,7 +117,7 @@ internal void BasicTests(void)
                     CHECK_MEM(D, 'd', 16);
                     CHECK_MEM(E, 'e', 16);
 
-                    D = FreeList_Realloc(&Alloc, D, 32);
+                    D = FreeList_Realloc(Alloc, D, 32);
                     CHECK_MEM(C, 'c', 48);
                     CHECK_MEM(D, 'd', 16);
                     CHECK_MEM(E, 'e', 16);
@@ -127,20 +125,19 @@ internal void BasicTests(void)
                     CHECK_MEM(C, 'c', 48);
                     CHECK_MEM(E, 'e', 16);
                 }
-                FreeList_Free(&Alloc, C);
+                FreeList_Free(Alloc, C);
                 CHECK_MEM(E, 'e', 16);
 
-                D = FreeList_Realloc(&Alloc, D, 48);
+                D = FreeList_Realloc(Alloc, D, 48);
                 CHECK_MEM(D, 'd', 32);
                 CHECK_MEM(E, 'e', 16);
             }
-            FreeList_Free(&Alloc, D);
+            FreeList_Free(Alloc, D);
             CHECK_MEM(E, 'e', 16);
         }
-        E = FreeList_Realloc(&Alloc, E, 24);
+        E = FreeList_Realloc(Alloc, E, 24);
         CHECK_MEM(E, 'e', 16);
     }
-    FreeList_Destroy(&Alloc);
 }
 
 internal void SizingTests(void)
@@ -182,8 +179,23 @@ internal void SizingTests(void)
 
 int main(void)
 {
-    BasicTests();
-    (void)printfln("FreeList Basic tests ok: frees: %d, allocs: %d.", g_FreeCount, g_AllocCount);
+    {
+        freelist_alloc Alloc;
+        FreeList_Create(&Alloc, g_StdAlloc, 128, 8);
+        BasicTests(&Alloc);
+        (void)printfln("FreeList Basic tests ok: allocs: %d.", g_AllocCount);
+        int PrevAllocCount = g_AllocCount;
+        g_AllocCount = 0;
+
+        FreeList_Reset(&Alloc);
+        BasicTests(&Alloc);
+        ASSERT(g_FreeCount == 0 && g_AllocCount == 0, "Must not allocate or free memory");
+        FreeList_Destroy(&Alloc);
+        ASSERT(g_FreeCount == PrevAllocCount, "Memory leak: free: %d, alloc: %d", g_FreeCount, PrevAllocCount);
+        (void)printfln("FreeList Reset tests ok: frees: %d.", g_FreeCount);
+        g_FreeCount = 0;
+        g_AllocCount = 0;
+    }
     g_FreeCount = 0;
     g_AllocCount = 0;
     SizingTests();

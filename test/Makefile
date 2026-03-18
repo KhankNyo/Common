@@ -1,6 +1,6 @@
 
 CC=gcc
-CCF=-std=c2x -Wall -Wextra -Wno-missing-braces -D_DEBUG -O2 -msse4.2 -g -I".."
+CCF=-std=c2x -Wall -Wextra -Wno-missing-braces -D_DEBUG -O0 -msse4.2 -g -I".."
 LDF=-lm
 
 .PHONY: all clean

@@ -13,9 +13,9 @@ typedef_struct(freelist__pool_header);
 struct freelist_alloc
 {
     arena_user_allocator UserAlloc;
-    i64 DefaultPoolCapacityBytes;
+    i64 DefaultPoolCapacityBytes;   /* should only be set once (during FreeList_Create()) */
     i32 Back;
-    u32 Alignment;      /* should only be set once (during FreeList_Create()) */
+    u32 Alignment;                  /* should only be set once (during FreeList_Create()) */
     freelist__pool_header *Pool;
     freelist__header *Alloced;
     freelist__header *Freed;
