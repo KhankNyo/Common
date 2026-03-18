@@ -3497,6 +3497,10 @@ void Renderer_Destroy(renderer *Vk)
     {
         Vulkan_ResourceGroup_Deinit(Vk, ResourceGroup);
     }
+    for (int i = 0; i < Vk->FramesInFlight; i++)
+    {
+        vkDestroySemaphore(Device, Vk->RenderTarget.OnFrameFinishedSemaphores[i], NULL);
+    }
 #else
     for (int i = 0; i < Vk->TextureArray.Count; i++)
     {
@@ -3517,7 +3521,6 @@ void Renderer_Destroy(renderer *Vk)
     }
     vkDestroyDescriptorPool(Device, Vk->DescriptorPool, NULL);
     vkDestroyDescriptorSetLayout(Device, Vk->DescriptorSetLayout, NULL);
-#endif
     /* nothing to do, Vkm_Destroy will deallocate all buffers */
     Vulkan_DestroySwapchain(Device, &Vk->Swapchain); 
     Vulkan_DestroySwapchainImageAndFramebuffer(Device, &Vk->SwapchainImage, true);
@@ -3539,6 +3542,7 @@ void Renderer_Destroy(renderer *Vk)
         g_VkDestroyDebugReportCallbackEXT(Instance, Vk->DebugReportCallback, NULL);
     );
     vkDestroyInstance(Instance, NULL);
+#endif
 
     /* arena owns Vk */
     Arena_Destroy(&Vk->Arena);
