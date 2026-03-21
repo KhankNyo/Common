@@ -131,20 +131,16 @@ internal VkSampler Vulkan_ResourceGroup_GetTexture(renderer *Vk, renderer_sample
 internal vk_mesh *Vulkan_ResourceGroup_GetMesh(renderer *Vk, renderer_mesh_handle Handle)
 {
     (void)Vk;
-    if (0 == Handle.Value)
-    {
-        ASSERT(Handle.Value != 0, "no default mesh");
-    }
+    ASSERT(Handle.Value != 0, "no default mesh");
+
     return (vk_mesh *)Handle.Value;
 }
 
 internal vk_graphics_pipeline *Vulkan_ResourceGroup_GetGraphicsPipeline(renderer *Vk, renderer_graphics_pipeline_handle Handle)
 {
-    if (0 == Handle.Value)
-    {
-        ASSERT(Vk->GlobalResourceGroup && Vk->GlobalResourceGroup->GraphicsPipelines.Count >= 1);
-        return &Vk->GlobalResourceGroup->GraphicsPipelines.Data[Handle.Value];
-    }
+    (void)Vk;
+    ASSERT(Handle.Value != 0, "No default graphics pipeline");
+
     vk_resource_group_and_index Result = Vulkan_ResourceGroup_ExtractHandle(Handle.Value);
     ASSERT(Result.Handle < Result.ResourceGroup->GraphicsPipelines.Count, "Invalid handle");
     return &Result.ResourceGroup->GraphicsPipelines.Data[Result.Handle];
@@ -765,6 +761,7 @@ internal vk_swapchain Vulkan_CreateSwapchain(
     return Swapchain;
 }
 
+#ifndef NEW_API
 internal void Vulkan_DestroySwapchainImageAndFramebuffer(
     VkDevice Device, 
     vk_swapchain_image *SwapchainImage, 
@@ -855,6 +852,7 @@ internal void Vulkan_CreateSwapchainImageViewAndFramebuffers(
     SwapchainImage->ViewArray = SwapchainImageViews;
     SwapchainImage->FramebufferArray = Framebuffers;
 }
+#endif /* NEW_API */
 
 internal VkShaderModule Vulkan_CreateShaderModule(
     VkDevice Device, const u8 *ShaderCode, isize CodeSize
@@ -1417,6 +1415,9 @@ internal vkm_image_and_view Vulkan_CreateColorResource(
 
 internal void Vulkan_RecreateSwapchain(renderer *Vk, arena_alloc *Arena)
 {
+#ifdef NEW_API
+    RUNTIME_TODO("recreate swapchain with new api");
+#else
     Vk->IsResized = false;
     profiler *Profiler = Vk->Profiler;
     vk_gpu_context *GpuContext = &Vk->GpuContext;
@@ -1526,6 +1527,7 @@ internal void Vulkan_RecreateSwapchain(renderer *Vk, arena_alloc *Arena)
             Vk->Swapchain.ArenaContext = Context;
         }
     }
+#endif
 }
 
 
@@ -1535,7 +1537,9 @@ internal void Vulkan_RecordCommandBuffer(
 ) {
     vkm *Vkm = &Vk->GpuContext.VkMalloc;
     vk_swapchain *Swapchain = &Vk->Swapchain;
+#ifndef NEW_API
     vk_swapchain_image *SwapchainImage = &Vk->SwapchainImage;
+#endif
     VkCommandBufferBeginInfo BeginInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .pInheritanceInfo = NULL, /* NOTE: for secondary command buffers */
@@ -1549,12 +1553,22 @@ internal void Vulkan_RecordCommandBuffer(
         };
         VkRenderPassBeginInfo RenderPassBeginInfo = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+#ifdef NEW_API
+            .renderPass = Vk->RenderTarget.RenderPass,
+#else
             .renderPass = Vk->RenderPass,
+#endif
+
             .renderArea = {
                 .offset = { 0 },
                 .extent = Swapchain->Extent,
             },
+#ifdef NEW_API
+            .framebuffer = Vk->RenderTarget.Framebuffers[FramebufferIndex],
+#else
             .framebuffer = SwapchainImage->FramebufferArray[FramebufferIndex],
+#endif
+
             .clearValueCount = STATIC_ARRAY_SIZE(Clears),
             .pClearValues = Clears,
         };
@@ -1621,6 +1635,16 @@ internal void Vulkan_RecordCommandBuffer(
                         VK_INDEX_TYPE_UINT32
                     );
 
+#ifdef NEW_API
+                    ASSERT(Vk->CurrentlyBoundResourceGroup, "must bind a resource group before a draw call");
+                    VkDescriptorSet *CurrentDescriptorSet = Vk->CurrentlyBoundResourceGroup->DescriptorSets + Vk->CurrentFrame;
+                    vkCmdBindDescriptorSets(CmdBuffer, 
+                        VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                        Pipeline->Layout, 
+                        0, 1, CurrentDescriptorSet, 
+                        0, NULL
+                    );
+#else
                     VkDescriptorSet *CurrentDescriptorSet = Vk->FrameData.DescriptorSetArray + Vk->CurrentFrame;
                     vkCmdBindDescriptorSets(CmdBuffer, 
                         VK_PIPELINE_BIND_POINT_GRAPHICS, 
@@ -1628,6 +1652,7 @@ internal void Vulkan_RecordCommandBuffer(
                         0, 1, CurrentDescriptorSet, 
                         0, NULL
                     );
+#endif
 
                     /* draw call */
                     u32 IndexCount = Group->Mesh_IndexBuffer_ElementCount;
@@ -1701,6 +1726,7 @@ internal VkDescriptorPool Vulkan_CreateDescriptorPool(VkDevice Device, int Frame
     return DescriptorPool;
 }
 
+#ifndef NEW_API
 internal vk_frame_data Vulkan_CreateFrameData(
     vk_gpu_context *GpuContext,
     VkCommandPool CommandPool,
@@ -1838,6 +1864,7 @@ internal vk_frame_data Vulkan_CreateFrameData(
         .UniformMappedMemoryArray = UniformBufferPtrArray,
     };
 }
+#endif /* NEW_API */
 
 /* NOTE: src buffer must have the same format as DstFormat */
 internal void Vulkan_CopyBufferToImage(
@@ -2021,6 +2048,84 @@ internal void Vulkan_GenerateMipmap(
 
 void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 PipelineCount)
 {
+#ifdef NEW_API
+    arena_alloc *Arena = &Vk->Arena;
+    VkDevice Device = Vulkan_GetDevice(Vk);
+    vk_swapchain *Swapchain = &Vk->Swapchain;
+    vk_gpu_context *GpuContext = &Vk->GpuContext;
+
+    u32 ImageIndex = 0;
+    {
+        VkSemaphore RenderTargetAvailable = Vk->RenderControl.OnRenderTargetAvailable[Vk->CurrentFrame];
+        VkFence *Fence = &Vk->RenderControl.BlockCpuWhenFrameIsStillInFlight[Vk->CurrentFrame];
+        vkWaitForFences(Device, 1, Fence, VK_TRUE, UINT64_MAX);
+        {
+            VkResult Result = vkAcquireNextImageKHR(Device, Swapchain->Handle, UINT64_MAX, 
+                RenderTargetAvailable, VK_NULL_HANDLE, &ImageIndex
+            );
+            if (Result == VK_ERROR_OUT_OF_DATE_KHR)
+            {
+                UNREACHABLE_IF(true, "TODO: recreate swapchain");
+            }
+            else if (Result == VK_SUBOPTIMAL_KHR || Result == VK_SUCCESS)
+            {
+                /* continue */
+            }
+            else
+            {
+                VK_FATAL("Vulkan: Unable to acquire next swapchain image");
+            }
+        }
+        vkResetFences(Device, 1, Fence);
+    }
+
+    /* record command buffer */
+    {
+        VK_CHECK(vkResetCommandBuffer(Vk->RenderControl.CommandBuffers[Vk->CurrentFrame], 0));
+        Vulkan_RecordCommandBuffer(Vk, Vk->RenderControl.CommandBuffers[Vk->CurrentFrame], ImageIndex, Pipelines, PipelineCount);
+        bool32 ShouldUpdateUniformBuffer = false;
+        UNREACHABLE_IF(ShouldUpdateUniformBuffer, "TODO: upate uniform buffer");
+    }
+
+
+    VkSemaphore GraphicsQueueSignal[] = { Vk->RenderControl.OnRenderTargetAvailable[Vk->CurrentFrame], };
+    VkSemaphore GraphicsQueueWait[] = { Vk->RenderTarget.OnRenderControlFinish[ImageIndex], };
+
+    /* submit to graphics queue */
+    {
+        TODO("graphics queue submit");
+        vkQueueSubmit(GpuContext->GraphicsQueue, 1, &GraphicsQueueSubmit, );
+    }
+
+    /* submit to present queue */
+    {
+        u32 ImageIndices[] = { ImageIndex };
+        VkPipelineStageFlags WaitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, };
+        VkSwapchainKHR Swapchains[] = { Vk->Swapchain.Handle };
+
+        VkPresentInfoKHR PresentInfo = {
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = STATIC_ARRAY_SIZE(GraphicsQueueSignal),
+            .pWaitSemaphores = GraphicsQueueSignal,
+            .swapchainCount = 1,
+            .pSwapchains = Swapchains,
+            .pImageIndices = ImageIndices,
+        };
+        VkResult Result = vkQueuePresentKHR(GpuContext->PresentQueue, &PresentInfo);
+        if (Result == VK_ERROR_OUT_OF_DATE_KHR || Result == VK_SUBOPTIMAL_KHR || Vk->IsResized)
+        {
+            UNREACHABLE_IF(true, "TODO: recreate swapchain after present");
+        }
+        else
+        {
+            VK_FATAL("Vulkan: Unable to present swapchain image");
+        }
+    }
+
+    Vk->CurrentFrame++;
+    if (Vk->CurrentFrame >= Vk->FramesInFlight)
+        Vk->CurrentFrame = 0;
+#else
     arena_alloc *Arena = &Vk->Arena;
     vk_gpu_context *GpuContext = &Vk->GpuContext;
     vk_frame_data *Frame = &Vk->FrameData;
@@ -2108,6 +2213,7 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
     Vk->CurrentFrame++;
     if (Vk->CurrentFrame >= Vk->FramesInFlight)
         Vk->CurrentFrame = 0;
+#endif
 }
 
 renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 ForceTripleBuffering, profiler *Profiler) 
@@ -2197,27 +2303,6 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
 
 #ifdef NEW_API
     {
-        u32 ImageCount = Vk->Swapchain.ImageCount;
-        VkImage *SwapchainImages;
-        {
-            u32 ImageCountNow;
-            vkGetSwapchainImagesKHR(Device, Vk->Swapchain.Handle, &ImageCountNow, NULL);
-            ASSERT(ImageCountNow == Vk->Swapchain.ImageCount, "Unreachable?");
-            Arena_AllocArray(&Vk->Arena, &SwapchainImages, ImageCount);
-            vkGetSwapchainImagesKHR(Device, Vk->Swapchain.Handle, &ImageCount, SwapchainImages);
-        }
-
-        VkImageView *SwapchainImageViews;
-        {
-            Arena_AllocArray(&Vk->Arena, &SwapchainImageViews, ImageCount);
-            int MipLevel = 1;
-            for (u32 i = 0; i < ImageCount; i++)
-            {
-                SwapchainImageViews[i] = Vulkan_CreateImageView(Device, 
-                    SwapchainImages[i], Vk->Swapchain.ImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, MipLevel
-                );
-            }
-        }
     }
 
     /* default/global resource group */
@@ -2228,10 +2313,12 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
             .ImagePoolSizeBytes = 8*MB
         };
         renderer_resource_group_handle ResourceGroup = Renderer_CreateResourceGroup(Vk, &ResourceConfig);
-        UNREACHABLE_IF(ResourceGroup.Value != 0, "Default resource group must have a handle value of 0");
+        Vk->GlobalResourceGroup = (vk_resource_group *)ResourceGroup.Value;
+        ASSERT(Vk->ResourceGroupHead == Vk->GlobalResourceGroup);
     }
 
     /* create descriptor layouts and sets */
+#if 0
     {
         uint TextureSamplerCountMax = 1u << 12;
         uint UniformBufferCountMax = 1u << 12;
@@ -2261,6 +2348,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
 
         Vk->DescriptorPool = DescriptorPool;
     }
+#endif
 
     /* create render target  */
     int MSAASampleCount = 1;
@@ -2313,11 +2401,35 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
             );
         }
 
-        VkRenderPass RenderPass = Vulkan_CreateRenderPass(GpuContext->Device, 
-                SampleCount, Vk->Swapchain.ImageFormat, DepthBufferImageFormat
-                );
+        VkImage *SwapchainImages;
+        VkImageView *SwapchainImageViews;
+        {
+            u32 ImageCount = Vk->Swapchain.ImageCount;
+            {
+                u32 ImageCountNow;
+                vkGetSwapchainImagesKHR(Device, Vk->Swapchain.Handle, &ImageCountNow, NULL);
+                ASSERT(ImageCountNow == Vk->Swapchain.ImageCount, "Unreachable?");
+                Arena_AllocArray(&Vk->Arena, &SwapchainImages, ImageCount);
+                vkGetSwapchainImagesKHR(Device, Vk->Swapchain.Handle, &ImageCount, SwapchainImages);
+            }
 
-        u32 ImageCount = Vk->SwapchainImage.Count;
+            {
+                Arena_AllocArray(&Vk->Arena, &SwapchainImageViews, ImageCount);
+                int MipLevel = 1;
+                for (u32 i = 0; i < ImageCount; i++)
+                {
+                    SwapchainImageViews[i] = Vulkan_CreateImageView(Device, 
+                        SwapchainImages[i], Vk->Swapchain.ImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, MipLevel
+                    );
+                }
+            }
+        }
+
+        VkRenderPass RenderPass = Vulkan_CreateRenderPass(GpuContext->Device, 
+            SampleCount, Vk->Swapchain.ImageFormat, DepthBufferImageFormat
+        );
+
+        u32 ImageCount = Vk->Swapchain.ImageCount;
         VkFramebuffer *Framebuffers;
         {
             int SwapchainWidth = Vk->Swapchain.Extent.width;
@@ -2329,7 +2441,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
                 VkImageView Attachments[] = { 
                     MSAABuffer.ImageView,
                     DepthBuffer.ImageView,
-                    Vk->SwapchainImage.ViewArray[i],
+                    SwapchainImageViews[i]
                 };
                 VkFramebufferCreateInfo CreateInfo = {
                     .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -2343,29 +2455,53 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
                 VK_CHECK(vkCreateFramebuffer(Device, &CreateInfo, NULL, &Framebuffers[i]));
             }
         }
-
-        VkSemaphore *Semaphores;
-        {
-            FreeList_AllocArray(&ResourceGroup->CpuAllocator, &Semaphores, ImageCount);
-            VkSemaphoreCreateInfo SemaphoreCreateInfo = {
-                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-            };
-            for (u32 i = 0; i < ImageCount; i++)
-            {
-                VK_CHECK(vkCreateSemaphore(Device, &SemaphoreCreateInfo, NULL, &Semaphores[i]));
-            }
-        }
-
         Vk->RenderTarget = (vk_render_target) {
             .SampleCount = SampleCount,
-            .ImageCount = ImageCount,
 
+            .ImageCount = ImageCount,
+            .SwapchainImages = SwapchainImages,
+            .SwapchainImageViews = SwapchainImageViews,
             .RenderPass = RenderPass,
-            .OnFrameFinishedSemaphores = Semaphores,
             .Framebuffers = Framebuffers,
 
             .ColorResource = MSAABuffer,
             .DepthResource = DepthBuffer,
+        };
+
+        VkFence *Fences;
+        VkSemaphore *Semaphores;
+        VkCommandBuffer *CommandBuffers;
+        {
+            FreeList_AllocArray(&ResourceGroup->CpuAllocator, &Semaphores, Vk->FramesInFlight);
+            FreeList_AllocArray(&ResourceGroup->CpuAllocator, &Fences, Vk->FramesInFlight);
+            FreeList_AllocArray(&ResourceGroup->CpuAllocator, &CommandBuffers, Vk->FramesInFlight);
+
+            VkSemaphoreCreateInfo SemaphoreCreateInfo = {
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+            };
+            VkFenceCreateInfo FenceCreateInfo = {
+                .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+            };
+            for (int i = 0; i < Vk->FramesInFlight; i++)
+            {
+                VK_CHECK(vkCreateSemaphore(Device, &SemaphoreCreateInfo, NULL, &Semaphores[i]));
+                VK_CHECK(vkCreateFence(Device, &FenceCreateInfo, NULL, &Fences[i]));
+            }
+
+            VkCommandBufferAllocateInfo CommandBufferAllocateInfo = {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool = Vk->CommandPool,
+                .commandBufferCount = Vk->FramesInFlight,
+                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            };
+            VK_CHECK(vkAllocateCommandBuffers(Device, &CommandBufferAllocateInfo, CommandBuffers));
+        }
+
+        Vk->RenderControl = (vk_render_control) {
+            .CommandBuffers = CommandBuffers,
+            .BlockCpuWhenFrameIsStillInFlight = Fences,
+            .OnImageAvailableSemaphores = Semaphores,
         };
     }
 
@@ -2469,12 +2605,12 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
     if (Vk->GlobalResourceGroup)
     {
         ASSERT(Vk->GlobalResourceGroup->Samplers.Count >= 1);
-        ASSERT(Vk->GlobalResourceGroup->GraphicsPipelines.Count >= 1);
+        //ASSERT(Vk->GlobalResourceGroup->GraphicsPipelines.Count >= 1);
         ASSERT(Vk->GlobalResourceGroup->Textures.Count >= 1);
         /* NOTE: handle 0 is always the first global handle */
         Vulkan_ResourceGroup_PushSampler(ResourceGroup, Vk->GlobalResourceGroup->Samplers.Data[0]);
         Vulkan_ResourceGroup_PushTexture(ResourceGroup, &Vk->GlobalResourceGroup->Textures.Data[0]);
-        Vulkan_ResourceGroup_PushGraphicsPipeline(ResourceGroup, &Vk->GlobalResourceGroup->GraphicsPipelines.Data[0]);
+        //Vulkan_ResourceGroup_PushGraphicsPipeline(ResourceGroup, &Vk->GlobalResourceGroup->GraphicsPipelines.Data[0]);
     }
 
     /* uniform buffer */
@@ -2716,6 +2852,7 @@ void Renderer_BindResourceGroup(
         }
 
         VkDescriptorBufferInfo *UniformBufferDescriptors;
+        Arena_AllocArray(Arena, &UniformBufferDescriptors, Vk->FramesInFlight);
         for (int i = 0; i < Vk->FramesInFlight; i++)
         {
             UniformBufferDescriptors[i] = (VkDescriptorBufferInfo) {
@@ -2750,6 +2887,8 @@ void Renderer_BindResourceGroup(
             vkUpdateDescriptorSets(Device, STATIC_ARRAY_SIZE(Writes), Writes, 0, NULL);
         }
     }
+
+    Vk->CurrentlyBoundResourceGroup = ResourceGroup;
 }
 
 
@@ -3044,7 +3183,7 @@ renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
                 .EnableBlending = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_BLENDING),
                 .EnableDepthTesting = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_Z_BUFFER), 
                 .EnableMSAA = EnableMSAA, 
-                .MSAASampleCount = Vk->MSAASample,
+                .MSAASampleCount = Vk->RenderTarget.SampleCount,
                 .EnableSampleShading = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_SAMPLE_SHADING), 
                 .SampleShadingMin = Config->SampleShadingMin,
             };
@@ -3484,10 +3623,8 @@ bool32 Renderer_IsMSAASampleCountSupported(renderer_handle Vk, int SampleCount)
 
 void Renderer_Destroy(renderer *Vk)
 {
-    VkInstance Instance = Vk->Instance;
     vk_gpu_context *GpuContext = &Vk->GpuContext;
     VkDevice Device = GpuContext->Device;
-    vk_frame_data *Frame = &Vk->FrameData;
     vkDeviceWaitIdle(Device);
 
 #ifdef NEW_API
@@ -3499,9 +3636,11 @@ void Renderer_Destroy(renderer *Vk)
     }
     for (int i = 0; i < Vk->FramesInFlight; i++)
     {
-        vkDestroySemaphore(Device, Vk->RenderTarget.OnFrameFinishedSemaphores[i], NULL);
+        vkDestroySemaphore(Device, Vk->RenderControl.OnImageAvailableSemaphores[i], NULL);
     }
 #else
+    VkInstance Instance = Vk->Instance;
+    vk_frame_data *Frame = &Vk->FrameData;
     for (int i = 0; i < Vk->TextureArray.Count; i++)
     {
         vk_texture *Texture = Vk->TextureArray.Data + i;

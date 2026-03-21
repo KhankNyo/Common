@@ -8,15 +8,13 @@
 #include <stdarg.h>
 
 
-#define VK_FATAL(...) do {\
-    Vulkan_LogLn("FATAL: "__VA_ARGS__);\
-    exit(1);\
-} while (0)
+#define VK_FATAL(...) UNREACHABLE_IF(false, __VA_ARGS__)
 
 #define VK_CHECK(call) do {\
     VkResult res = call;\
     if (res != VK_SUCCESS) {\
-        VK_FATAL("%s -- '"#call, Vulkan_VkResultToString(res));\
+        const char *fatal_msg = Vulkan_VkResultToString(res);\
+        VK_FATAL("%s -- '"#call" -> %08x", fatal_msg, res);\
     }\
 } while (0)
 

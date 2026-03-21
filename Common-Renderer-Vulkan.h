@@ -16,10 +16,8 @@
 
 /* TODO: move this somewhere else */
 #define VkDynamicArray_ResizeCapacity(p_freelist, p_da, isize_new_capacity) do {\
-    isize new_capacity_ = isize_new_capacity;\
-    typeof(p_da) dynamic_array_ = p_da;\
-    FreeList_ReallocArray(freelist_, &dynamic_array_->Data, new_capacity_);\
-    dynamic_array_->Capacity = new_capacity_;\
+    (p_da)->Capacity = isize_new_capacity;\
+    FreeList_ReallocArray(freelist_, &(p_da)->Data, (p_da)->Capacity);\
 } while (0)
 #define VkDynamicArray_Push(p_freelist, p_da, ...) do {\
     typeof(p_freelist) freelist_ = p_freelist;\
@@ -60,10 +58,12 @@ typedef_struct(vk_device_memory_image);
 typedef_struct(vk_swapchain_image);
 typedef_struct(vk_mesh);
 typedef_struct(vk_uniform_buffer);
-typedef_struct(vk_render_target);
 
 
 #ifdef NEW_API
+typedef_struct(vk_render_target);
+typedef_struct(vk_render_control);
+
 struct vk_texture
 {
     vkm_image_handle Image;
@@ -200,6 +200,7 @@ struct renderer
 
         arena_context ArenaContext;
     } Swapchain;
+#ifndef NEW_API
     struct vk_swapchain_image {
         u32 Count;
         VkImage *Array;
@@ -215,9 +216,7 @@ struct renderer
     dynamic_array(vk_graphics_pipeline) GraphicsPipelines;
 
     VkCommandPool CommandPool;
-#ifndef NEW_API
     VkDescriptorSetLayout DescriptorSetLayout;
-#endif
     VkDescriptorPool DescriptorPool;
     struct vk_frame_data
     {
@@ -238,6 +237,7 @@ struct renderer
 
     vk_texture_array TextureArray;
     dynamic_array(u8) UniformBuffer;
+#endif
     bool8 ShouldUpdateUniformBuffer;
     bool8 IsResized;
     bool8 ForceTripleBuffering;
@@ -250,19 +250,34 @@ struct renderer
 #ifdef NEW_API
     vk_resource_group *ResourceGroupHead, 
                       *ResourceGroupFreeSlots, 
-                      *GlobalResourceGroup;
+                      *GlobalResourceGroup, 
+                      *CurrentlyBoundResourceGroup;
 
     struct vk_render_target
     {
         VkSampleCountFlags SampleCount;
+
         u32 ImageCount;
+        VkFramebuffer *Framebuffers;
+        VkImage *SwapchainImages;
+        VkImageView *SwapchainImageViews;
+        VkSemaphore *OnRenderControlFinish;
 
         VkRenderPass RenderPass;
-        VkSemaphore *OnFrameFinishedSemaphores;
-        VkFramebuffer *Framebuffers;
         vkm_image_and_view DepthResource;
         vkm_image_and_view ColorResource;
     } RenderTarget;
+
+    /* NOTE: vk_render_control */
+    VkCommandPool CommandPool;
+    struct vk_render_control
+    {
+        VkCommandBuffer *CommandBuffers;
+        VkFence *BlockCpuWhenFrameIsStillInFlight;
+        VkSemaphore *OnRenderTargetAvailable;
+    } RenderControl;
+    int CurrentFrame;
+    int FramesInFlight;
 #else
     /* renderer_mesh_handle */
     dynamic_array(vk_mesh) MeshArray;

@@ -413,6 +413,7 @@ force_inline void Renderer__InitDefaultResources(renderer_handle Renderer)
     }
 
     /* default graphics pipeline */
+#if 0
     {
         renderer_vertex_attributes Attrib = {
             .Binding = 0, .Location = 0, .Offset = 0, .Type = RENDERER_TYPE_F32x3,
@@ -434,6 +435,7 @@ force_inline void Renderer__InitDefaultResources(renderer_handle Renderer)
         renderer_graphics_pipeline_handle GraphicsPipeline = Renderer_CreateGraphicsPipeline(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &Config);
         (void)GraphicsPipeline;
     }
+#endif
 }
 
 #endif

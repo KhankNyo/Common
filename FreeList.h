@@ -269,6 +269,11 @@ void FreeList_Free(freelist_alloc *Allocator, void *Ptr)
 
 void *FreeList_ReallocNonZero(freelist_alloc *Allocator, void *Ptr, i32 SizeBytes)
 {
+    if (NULL == Ptr)
+    {
+        return FreeList_AllocNonZero(Allocator, SizeBytes);
+    }
+
     freelist__header *Header = FL__HEADER_FROM_PTR(Allocator, Ptr);
     if (SizeBytes < Header->CapacityBytes)
     {
@@ -291,6 +296,11 @@ void *FreeList_ReallocNonZero(freelist_alloc *Allocator, void *Ptr, i32 SizeByte
 
 void *FreeList_Realloc(freelist_alloc *Allocator, void *Ptr, i32 SizeBytes)
 {
+    if (NULL == Ptr)
+    {
+        return FreeList_Alloc(Allocator, SizeBytes);
+    }
+
     isize NonZeroSize = FL__HEADER_FROM_PTR(Allocator, Ptr)->SizeBytes;
     void *NewPtr = FreeList_ReallocNonZero(Allocator, Ptr, SizeBytes);
     if (SizeBytes > NonZeroSize)

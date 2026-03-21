@@ -84,6 +84,22 @@ internal void InitRenderer(app *App, const char *AppName)
         App->Renderer = Renderer_Init(AppName, FramesInFlight, ForceTripleBuffering, Profiler);
     }
 
+    /* create resource group */
+#ifdef NEW_API
+    {
+        renderer_resource_group_config Config = {
+            .CpuBufferPoolSizeBytes = 4096,
+            .GpuBufferPoolSizeBytes = 4096,
+            .ImagePoolSizeBytes = 4096,
+            .UniformBufferSizeBytes = 0,
+
+            .UniformBufferBinding = 0,
+            .TextureArrayBinding = 1,
+        };
+        App->ResourceGroup = Renderer_CreateResourceGroup(App->Renderer, &Config);
+    }
+#endif
+
     /* create a full screen mesh */
     {
         vertex_buffer Vertices[4] = {
@@ -108,6 +124,14 @@ internal void InitRenderer(app *App, const char *AppName)
             0, 1, 2,
             2, 3, 0
         };
+#ifdef NEW_API
+        renderer_mesh_config MeshConfig = {
+            .IndexCount = STATIC_ARRAY_SIZE(Indices),
+            .VertexCount = STATIC_ARRAY_SIZE(Vertices),
+            .VertexBufferElementSizeBytes = sizeof(Vertices[0]),
+        };
+        App->FullScreenMesh = Renderer_CreateStaticMesh(App->Renderer, App->ResourceGroup, &MeshConfig, Vertices, Indices);
+#else
         App->FullScreenMesh = Renderer_CreateMesh(App->Renderer, sizeof Vertices, sizeof Indices);
         renderer_result Result = Renderer_UpdateMesh(App->Renderer, 
             App->FullScreenMesh, 
@@ -115,6 +139,7 @@ internal void InitRenderer(app *App, const char *AppName)
             Indices, STATIC_ARRAY_SIZE(Indices)
         );
         UNREACHABLE_IF(Result != RENDERER_SUCCESS, "Renderer_UpdateMesh()");
+#endif
     }
 
     /* upload shader and create graphics pipeline */
@@ -239,6 +264,33 @@ internal void InitRenderer(app *App, const char *AppName)
             0x07, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00,  0x1d, 0x00, 0x00, 0x00, 0x3e, 0x00, 0x03, 0x00,
             0x1b, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00,  0xfd, 0x00, 0x01, 0x00, 0x38, 0x00, 0x01, 0x00,
         };
+#ifdef NEW_API
+        renderer_vertex_attributes VertexAttribs[] = {
+            [0] = { /* NOTE: location must match with shader */
+                .Binding = 0, .Location = 0, .Offset = offsetof(vertex_buffer, Color), .Type = RENDERER_TYPE_F32x4,
+            },
+            [1] = {
+                .Binding = 0, .Location = 1, .Offset = offsetof(vertex_buffer, Pos), .Type = RENDERER_TYPE_F32x3,
+            },
+        };
+        renderer_vertex_description VertexDesc = {
+            .Binding = 0,
+            .AttribCount = STATIC_ARRAY_SIZE(VertexAttribs),
+            .Attribs = VertexAttribs,
+            .Stride = sizeof(vertex_buffer),
+        };
+        renderer_graphics_pipeline_config GraphicsPipelineConfig = {
+            .EnabledGraphicsFeatures = RENDERER_GFXFT_BLENDING,
+            .VertShaderCode = VertexShaderCode,
+            .VertShaderCodeSizeBytes = sizeof VertexShaderCode,
+            .FragShaderCode = FragmentShaderCode,
+            .FragShaderCodeSizeBytes = sizeof FragmentShaderCode,
+            .VertexDescription = &VertexDesc,
+        };
+        App->GraphicsPipeline = Renderer_CreateGraphicsPipeline(App->Renderer, App->ResourceGroup, &GraphicsPipelineConfig);
+        Renderer_BindResourceGroup(App->Renderer, App->ResourceGroup);
+#else
+
         int MSAASampleCount = 1;
         renderer_vertex_attributes VertexAttribs[] = {
             [0] = { /* NOTE: location must match with shader */
@@ -270,5 +322,6 @@ internal void InitRenderer(app *App, const char *AppName)
             GraphicsPipelineCount, &GraphicsPipelineConfig, 
             &App->GraphicsPipeline
         );
+#endif
     }
 }

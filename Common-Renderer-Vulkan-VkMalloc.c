@@ -36,7 +36,7 @@ internal i32 Vulkan_FindMemoryType(VkPhysicalDevice PhysDevice, u32 Filter, VkMe
 internal bool32 Vkm__BufferFits(const vkm_buffer_pool_slot *Slot, i64 BufferSizeBytes)
 {
     /* TODO: turn this into a pool-style allocator */
-    i64 AlignedSize = Arena_AlignSize(BufferSizeBytes, Slot->Alignment);
+    i64 AlignedSize = Memory_AlignSize(BufferSizeBytes, Slot->Alignment);
     bool32 Fits = Slot->SizeBytesRemain - AlignedSize >= 0;
     return Fits;
 }
@@ -54,7 +54,7 @@ internal vkm__allocate_device_memory_result Vkm__AllocateDeviceMemory(vkm *Vkm, 
     for (int i = Vkm->DeviceMemoryCount - 1; i >= 0; i--)
     {
         vkm_device_memory *PoolSlot = &Vkm->DeviceMemory[i];
-        i64 Offset = Arena_AlignSize(PoolSlot->Offset, Requirements.alignment);
+        i64 Offset = Memory_AlignSize(PoolSlot->Offset, Requirements.alignment);
         if (PoolSlot->TypeIndex == MemoryTypeIndex
         && Offset + (isize)Requirements.size <= PoolSlot->Capacity)
         {
@@ -306,7 +306,7 @@ vkm_buffer Vkm_CreateBuffer(vkm *Vkm, vkm_memory_type MemoryType, isize BufferSi
         {
             int MemoryTypeIndex = Vulkan_FindMemoryType(Vkm->PhysicalDevice, MemoryRequirements.memoryTypeBits, Pool->DefaultMemoryProperties);
             NewBufferAlignment = MAXIMUM(NewBufferAlignment, MemoryRequirements.alignment);
-            NewBufferSize = Arena_AlignSize(MAXIMUM(NewBufferSize, (isize)MemoryRequirements.size), NewBufferAlignment);
+            NewBufferSize = Memory_AlignSize(MAXIMUM(NewBufferSize, (isize)MemoryRequirements.size), NewBufferAlignment);
 
             VkMemoryAllocateInfo AllocInfo = {
                 .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -341,12 +341,12 @@ vkm_buffer Vkm_CreateBuffer(vkm *Vkm, vkm_memory_type MemoryType, isize BufferSi
 
     ASSERT(Slot != NULL);
     ASSERT(Vkm__BufferFits(Slot, BufferSizeBytes), "Slot: %zi, alignment: %zi, BufferSizeBytes: %zi, aligned size: %zi", 
-        Slot->SizeBytesRemain, Slot->Alignment, BufferSizeBytes, Arena_AlignSize(BufferSizeBytes, Slot->Alignment)
+        Slot->SizeBytesRemain, Slot->Alignment, BufferSizeBytes, Memory_AlignSize(BufferSizeBytes, Slot->Alignment)
     );
 
     u64 PoolIndex = Slot - Pool->Slot;
-    u64 AlignedOffset = Arena_AlignSize(Offset, Slot->Alignment);
-    u64 AlignedSize = Arena_AlignSize(BufferSizeBytes, Slot->Alignment);
+    u64 AlignedOffset = Memory_AlignSize(Offset, Slot->Alignment);
+    u64 AlignedSize = Memory_AlignSize(BufferSizeBytes, Slot->Alignment);
     ASSERT(PoolIndex <= VKM_POOL_SLOT_COUNT, "Invalid pool slot");
     ASSERT(AlignedOffset <= VKM_BUFFER_MAX_OFFSET, "Invalid pool slot alignment");
     ASSERT(AlignedSize <= VKM_BUFFER_MAX_SIZEBYTES, "Invalid pool slot size");
