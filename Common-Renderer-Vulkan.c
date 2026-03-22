@@ -1039,6 +1039,7 @@ internal vk_graphics_pipeline Vulkan_CreateGraphicsPipeline(
             .pPushConstantRanges = NULL,
         };
         VK_CHECK(vkCreatePipelineLayout(Device, &PipelineLayoutCreateInfo, NULL, &PipelineLayout));
+        ASSERT(PipelineLayout != NULL);
 
         STATIC_ASSERT(STATIC_ARRAY_SIZE(ShaderStages) == 2, "");
         VkGraphicsPipelineCreateInfo GraphicsPipelineCreateInfo = {
@@ -1068,6 +1069,7 @@ internal vk_graphics_pipeline Vulkan_CreateGraphicsPipeline(
         VK_CHECK(vkCreateGraphicsPipelines(
             Device, VK_NULL_HANDLE, 1, &GraphicsPipelineCreateInfo, NULL, &GraphicsPipelineHandle
         ));
+        ASSERT(GraphicsPipelineHandle != NULL);
     }
     vkDestroyShaderModule(Device, FragShaderModule, NULL);
     vkDestroyShaderModule(Device, VertShaderModule, NULL);
@@ -1535,16 +1537,14 @@ internal void Vulkan_RecordCommandBuffer(
     renderer *Vk, VkCommandBuffer CmdBuffer, u32 FramebufferIndex,
     const renderer_draw_pipeline *Pipelines, i32 PipelineCount
 ) {
-    vkm *Vkm = &Vk->GpuContext.VkMalloc;
+#ifdef NEW_API
     vk_swapchain *Swapchain = &Vk->Swapchain;
-#ifndef NEW_API
-    vk_swapchain_image *SwapchainImage = &Vk->SwapchainImage;
-#endif
+    ASSERT(Vk->CurrentlyBoundResourceGroup);
+
     VkCommandBufferBeginInfo BeginInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .pInheritanceInfo = NULL, /* NOTE: for secondary command buffers */
     };
-
     VK_CHECK(vkBeginCommandBuffer(CmdBuffer, &BeginInfo));
     {
         VkClearValue Clears[] = {
@@ -1553,21 +1553,12 @@ internal void Vulkan_RecordCommandBuffer(
         };
         VkRenderPassBeginInfo RenderPassBeginInfo = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-#ifdef NEW_API
             .renderPass = Vk->RenderTarget.RenderPass,
-#else
-            .renderPass = Vk->RenderPass,
-#endif
-
             .renderArea = {
                 .offset = { 0 },
                 .extent = Swapchain->Extent,
             },
-#ifdef NEW_API
             .framebuffer = Vk->RenderTarget.Framebuffers[FramebufferIndex],
-#else
-            .framebuffer = SwapchainImage->FramebufferArray[FramebufferIndex],
-#endif
 
             .clearValueCount = STATIC_ARRAY_SIZE(Clears),
             .pClearValues = Clears,
@@ -1587,13 +1578,8 @@ internal void Vulkan_RecordCommandBuffer(
             for (int i = 0; i < PipelineCount; i++)
             {
                 const renderer_draw_pipeline *DrawPipeline = Pipelines + i;
-#ifdef NEW_API
                 const vk_graphics_pipeline *Pipeline = Vulkan_ResourceGroup_GetGraphicsPipeline(Vk, DrawPipeline->GraphicsPipelineHandle);
-#else
-                const vk_graphics_pipeline *Pipeline = &Vk->GraphicsPipelines.Data[
-                    DrawPipeline->GraphicsPipelineHandle.Value
-                ];
-#endif
+                ASSERT(Pipeline->Handle != NULL);
 
                 vkCmdBindPipeline(CmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Handle);
                 vkCmdSetViewport(CmdBuffer, 0, 1, &FullScreenViewport);
@@ -1601,11 +1587,7 @@ internal void Vulkan_RecordCommandBuffer(
                 for (int k = 0; k < DrawPipeline->GroupCount; k++)
                 {
                     const renderer_draw_pipeline_group *Group = DrawPipeline->Groups + k;
-#if defined(NEW_API)
                     const vk_mesh *Mesh = Vulkan_ResourceGroup_GetMesh(Vk, Group->MeshHandle);
-#else
-                    const vk_mesh *Mesh = &Vk->MeshArray.Data[Group->MeshHandle.Value];
-#endif
 
                     VkRect2D Scissor = {
                         .offset = {
@@ -1619,24 +1601,20 @@ internal void Vulkan_RecordCommandBuffer(
                     }; 
 
                     vkCmdSetScissor(CmdBuffer, 0, 1, &Scissor);
-#ifdef NEW_API
                     ASSERT(Mesh->IndexCount, "handle: %llu", (long long unsigned)Group->MeshHandle.Value);
-#else
-                    ASSERT(Mesh->IndexCount, "handle: %d", Group->MeshHandle.Value);
-#endif
 
-                    VkBuffer VertexBuffers[] = { Vkm_Buffer_GetVkBuffer(Vkm, Mesh->VertexBuffer) };
+                    VkBuffer VertexBuffers[] = { Vkm_Buffer_GetVkBuffer(&Vk->CurrentlyBoundResourceGroup->GpuAllocator, Mesh->VertexBuffer) };
+                    ASSERT(VertexBuffers[0] != NULL, "Did you bind the correct resource group before draw call?");
+
                     VkDeviceSize Offsets[] = { Vkm_Buffer_GetOffsetBytes(Mesh->VertexBuffer) };
                     vkCmdBindVertexBuffers(CmdBuffer, 0, 1, VertexBuffers, Offsets);
 
                     vkCmdBindIndexBuffer(CmdBuffer, 
-                        Vkm_Buffer_GetVkBuffer(Vkm, Mesh->IndexBuffer), 
+                        Vkm_Buffer_GetVkBuffer(&Vk->CurrentlyBoundResourceGroup->GpuAllocator, Mesh->IndexBuffer), 
                         Vkm_Buffer_GetOffsetBytes(Mesh->IndexBuffer), 
                         VK_INDEX_TYPE_UINT32
                     );
 
-#ifdef NEW_API
-                    ASSERT(Vk->CurrentlyBoundResourceGroup, "must bind a resource group before a draw call");
                     VkDescriptorSet *CurrentDescriptorSet = Vk->CurrentlyBoundResourceGroup->DescriptorSets + Vk->CurrentFrame;
                     vkCmdBindDescriptorSets(CmdBuffer, 
                         VK_PIPELINE_BIND_POINT_GRAPHICS, 
@@ -1644,15 +1622,6 @@ internal void Vulkan_RecordCommandBuffer(
                         0, 1, CurrentDescriptorSet, 
                         0, NULL
                     );
-#else
-                    VkDescriptorSet *CurrentDescriptorSet = Vk->FrameData.DescriptorSetArray + Vk->CurrentFrame;
-                    vkCmdBindDescriptorSets(CmdBuffer, 
-                        VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                        Pipeline->Layout, 
-                        0, 1, CurrentDescriptorSet, 
-                        0, NULL
-                    );
-#endif
 
                     /* draw call */
                     u32 IndexCount = Group->Mesh_IndexBuffer_ElementCount;
@@ -1665,6 +1634,110 @@ internal void Vulkan_RecordCommandBuffer(
         vkCmdEndRenderPass(CmdBuffer);
     }
     VK_CHECK(vkEndCommandBuffer(CmdBuffer));
+
+
+#else
+
+    vkm *Vkm = &Vk->GpuContext.VkMalloc;
+    vk_swapchain *Swapchain = &Vk->Swapchain;
+    vk_swapchain_image *SwapchainImage = &Vk->SwapchainImage;
+    VkCommandBufferBeginInfo BeginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pInheritanceInfo = NULL, /* NOTE: for secondary command buffers */
+    };
+
+    VK_CHECK(vkBeginCommandBuffer(CmdBuffer, &BeginInfo));
+    {
+        VkClearValue Clears[] = {
+            [0] = {.color.float32 = {.2f, .3f, .4f, 1.0f}},
+            [1] = {.depthStencil = {1.0f, 0.0f}},
+        };
+        VkRenderPassBeginInfo RenderPassBeginInfo = {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .renderPass = Vk->RenderPass,
+
+            .renderArea = {
+                .offset = { 0 },
+                .extent = Swapchain->Extent,
+            },
+            .framebuffer = SwapchainImage->FramebufferArray[FramebufferIndex],
+
+            .clearValueCount = STATIC_ARRAY_SIZE(Clears),
+            .pClearValues = Clears,
+        };
+        vkCmdBeginRenderPass(CmdBuffer, &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+        {
+            VkViewport FullScreenViewport = { 
+                .x = 0, 
+                .y = (float)Swapchain->Extent.height, 
+                .width = (float)Swapchain->Extent.width, 
+                .height = -(float)Swapchain->Extent.height,
+                .maxDepth = 1.0f, 
+                .minDepth = 0.0f,
+            };
+
+            /* bind each pipeline and draw each mesh group */
+            for (int i = 0; i < PipelineCount; i++)
+            {
+                const renderer_draw_pipeline *DrawPipeline = Pipelines + i;
+                const vk_graphics_pipeline *Pipeline = &Vk->GraphicsPipelines.Data[
+                    DrawPipeline->GraphicsPipelineHandle.Value
+                ];
+
+                vkCmdBindPipeline(CmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Handle);
+                vkCmdSetViewport(CmdBuffer, 0, 1, &FullScreenViewport);
+
+                for (int k = 0; k < DrawPipeline->GroupCount; k++)
+                {
+                    const renderer_draw_pipeline_group *Group = DrawPipeline->Groups + k;
+                    const vk_mesh *Mesh = &Vk->MeshArray.Data[Group->MeshHandle.Value];
+
+                    VkRect2D Scissor = {
+                        .offset = {
+                            .x = Group->Scissor.OffsetX,
+                            .y = Group->Scissor.OffsetY,
+                        },
+                        .extent = {
+                            .width = Group->Scissor.Width == 0? Swapchain->Extent.width : Group->Scissor.Width,
+                            .height = Group->Scissor.Height == 0? Swapchain->Extent.height : Group->Scissor.Height,
+                        },
+                    }; 
+
+                    vkCmdSetScissor(CmdBuffer, 0, 1, &Scissor);
+                    ASSERT(Mesh->IndexCount, "handle: %d", Group->MeshHandle.Value);
+
+                    VkBuffer VertexBuffers[] = { Vkm_Buffer_GetVkBuffer(Vkm, Mesh->VertexBuffer) };
+                    ASSERT(VertexBuffers[0] != NULL);
+                    VkDeviceSize Offsets[] = { Vkm_Buffer_GetOffsetBytes(Mesh->VertexBuffer) };
+                    vkCmdBindVertexBuffers(CmdBuffer, 0, 1, VertexBuffers, Offsets);
+
+                    vkCmdBindIndexBuffer(CmdBuffer, 
+                        Vkm_Buffer_GetVkBuffer(Vkm, Mesh->IndexBuffer), 
+                        Vkm_Buffer_GetOffsetBytes(Mesh->IndexBuffer), 
+                        VK_INDEX_TYPE_UINT32
+                    );
+
+                    VkDescriptorSet *CurrentDescriptorSet = Vk->FrameData.DescriptorSetArray + Vk->CurrentFrame;
+                    vkCmdBindDescriptorSets(CmdBuffer, 
+                        VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                        Pipeline->Layout, 
+                        0, 1, CurrentDescriptorSet, 
+                        0, NULL
+                    );
+
+                    /* draw call */
+                    u32 IndexCount = Group->Mesh_IndexBuffer_ElementCount;
+                    if (IndexCount == 0)
+                        IndexCount = Mesh->IndexCount;
+                    vkCmdDrawIndexed(CmdBuffer, IndexCount, 1, Group->Mesh_IndexBuffer_FirstElement, 0, 0);
+                }
+            }
+        }
+        vkCmdEndRenderPass(CmdBuffer);
+    }
+    VK_CHECK(vkEndCommandBuffer(CmdBuffer));
+
+#endif
 }
 
 
@@ -2049,6 +2122,8 @@ internal void Vulkan_GenerateMipmap(
 void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 PipelineCount)
 {
 #ifdef NEW_API
+    ASSERT(Vk->CurrentlyBoundResourceGroup, "Renderer_BindResourceGroup() must be called before rendering");
+
     arena_alloc *Arena = &Vk->Arena;
     VkDevice Device = Vulkan_GetDevice(Vk);
     vk_swapchain *Swapchain = &Vk->Swapchain;
@@ -2084,24 +2159,41 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
         VK_CHECK(vkResetCommandBuffer(Vk->RenderControl.CommandBuffers[Vk->CurrentFrame], 0));
         Vulkan_RecordCommandBuffer(Vk, Vk->RenderControl.CommandBuffers[Vk->CurrentFrame], ImageIndex, Pipelines, PipelineCount);
         bool32 ShouldUpdateUniformBuffer = false;
-        UNREACHABLE_IF(ShouldUpdateUniformBuffer, "TODO: upate uniform buffer");
+        if (ShouldUpdateUniformBuffer)
+        {
+            UNREACHABLE_IF(ShouldUpdateUniformBuffer, "TODO: upate uniform buffer");
+        }
     }
 
 
-    VkSemaphore GraphicsQueueSignal[] = { Vk->RenderControl.OnRenderTargetAvailable[Vk->CurrentFrame], };
-    VkSemaphore GraphicsQueueWait[] = { Vk->RenderTarget.OnRenderControlFinish[ImageIndex], };
+    VkSemaphore GraphicsQueueWait[] = { Vk->RenderControl.OnRenderTargetAvailable[Vk->CurrentFrame], };
+    VkSemaphore GraphicsQueueSignal[] = { Vk->RenderTarget.OnRenderControlFinish[ImageIndex], };
 
     /* submit to graphics queue */
     {
-        TODO("graphics queue submit");
-        vkQueueSubmit(GpuContext->GraphicsQueue, 1, &GraphicsQueueSubmit, );
+        VkPipelineStageFlags WaitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, };
+        STATIC_ASSERT(STATIC_ARRAY_SIZE(WaitStages) == STATIC_ARRAY_SIZE(GraphicsQueueWait), "");
+
+        VkSubmitInfo GraphicsQueueSubmitInfo = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = STATIC_ARRAY_SIZE(GraphicsQueueWait),
+            .pWaitSemaphores = GraphicsQueueWait,
+            .pWaitDstStageMask = WaitStages,
+            .signalSemaphoreCount = STATIC_ARRAY_SIZE(GraphicsQueueSignal),
+            .pSignalSemaphores = GraphicsQueueSignal,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &Vk->RenderControl.CommandBuffers[Vk->CurrentFrame],
+        };
+        VK_CHECK(vkQueueSubmit(GpuContext->GraphicsQueue, 
+            1, &GraphicsQueueSubmitInfo,
+            Vk->RenderControl.BlockCpuWhenFrameIsStillInFlight[Vk->CurrentFrame]
+        ));
     }
 
     /* submit to present queue */
     {
-        u32 ImageIndices[] = { ImageIndex };
-        VkPipelineStageFlags WaitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, };
         VkSwapchainKHR Swapchains[] = { Vk->Swapchain.Handle };
+        u32 ImageIndices[] = { ImageIndex };
 
         VkPresentInfoKHR PresentInfo = {
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -2116,7 +2208,7 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
         {
             UNREACHABLE_IF(true, "TODO: recreate swapchain after present");
         }
-        else
+        else if (Result != VK_SUCCESS)
         {
             VK_FATAL("Vulkan: Unable to present swapchain image");
         }
@@ -2263,9 +2355,9 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
     /* initialize custom memory allocator */
     {
         Vk->GpuBufferUsageFlags[VKM_MEMORY_TYPE_CPU_VISIBLE] = 
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT; 
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT; 
         Vk->GpuBufferUsageFlags[VKM_MEMORY_TYPE_GPU_LOCAL] = 
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
         Vk->GpuMemoryProperties[VKM_MEMORY_TYPE_GPU_LOCAL] = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         Vk->GpuMemoryProperties[VKM_MEMORY_TYPE_CPU_VISIBLE] = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
@@ -2310,7 +2402,12 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
         renderer_resource_group_config ResourceConfig = { 
             .CpuBufferPoolSizeBytes = 4*KB,
             .GpuBufferPoolSizeBytes = 8*MB,
-            .ImagePoolSizeBytes = 8*MB
+            .ImagePoolSizeBytes = 8*MB,
+
+            .UniformBufferBinding = 0,
+            .UniformBufferSizeBytes = 1, /* TODO: put a useful uniform buffer here */
+
+            .TextureArrayBinding = 1,
         };
         renderer_resource_group_handle ResourceGroup = Renderer_CreateResourceGroup(Vk, &ResourceConfig);
         Vk->GlobalResourceGroup = (vk_resource_group *)ResourceGroup.Value;
@@ -2351,122 +2448,137 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
 #endif
 
     /* create render target  */
-    int MSAASampleCount = 1;
+    int MSAASampleCount = 4;
     {
-        platform_window_dimensions Monitor = Platform_Get(MonitorDimensions);
-        vk_gpu_context *GpuContext = &Vk->GpuContext;
-        VkDevice Device = GpuContext->Device;
-        VkSampleCountFlags SampleCount = Vulkan_GetVkSampleCountFlags(&Vk->Gpus.Selected, MSAASampleCount);
         vk_resource_group *ResourceGroup = Vk->GlobalResourceGroup;
-
-        vkm_image_and_view MSAABuffer;
         {
-            int MipLevel = 1;
-            MSAABuffer = Vkm_CreateImageAndView(&ResourceGroup->GpuAllocator,
-                Monitor.Width, Monitor.Height, MipLevel, 
-                SampleCount, 
-                Vk->Swapchain.ImageFormat, 
-                VK_IMAGE_TILING_OPTIMAL, 
-                VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 
-                VK_IMAGE_ASPECT_COLOR_BIT
-            );
-        }
+            platform_window_dimensions Monitor = Platform_Get(MonitorDimensions);
+            vk_gpu_context *GpuContext = &Vk->GpuContext;
+            VkDevice Device = GpuContext->Device;
+            VkSampleCountFlags SampleCount = Vulkan_GetVkSampleCountFlags(&Vk->Gpus.Selected, MSAASampleCount);
 
-        VkFormat DepthBufferImageFormat;
-        vkm_image_and_view DepthBuffer;
-        {
-            VkFormat DesiredFormats[] = {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D32_SFLOAT};
-            DepthBufferImageFormat = Vulkan_FindSupportedFormat(
-                GpuContext->PhysicalDevice, 
-                DesiredFormats, STATIC_ARRAY_SIZE(DesiredFormats), 
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
-            );
-
-            int MipLevel = 1;
-            DepthBuffer = Vkm_CreateImageAndView(&ResourceGroup->GpuAllocator, 
-                Monitor.Width, Monitor.Height, MipLevel, 
-                SampleCount, DepthBufferImageFormat, 
-                VK_IMAGE_TILING_OPTIMAL, 
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                VK_IMAGE_ASPECT_DEPTH_BIT
-            );
-            Vulkan_TransitionImageLayout(GpuContext, 
-                Vk->CommandPool, 
-                Vkm_Image_Get(&ResourceGroup->GpuAllocator, DepthBuffer.ImageHandle).Handle,
-                DepthBufferImageFormat,
-                VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                MipLevel
-            );
-        }
-
-        VkImage *SwapchainImages;
-        VkImageView *SwapchainImageViews;
-        {
-            u32 ImageCount = Vk->Swapchain.ImageCount;
+            vkm_image_and_view MSAABuffer;
             {
-                u32 ImageCountNow;
-                vkGetSwapchainImagesKHR(Device, Vk->Swapchain.Handle, &ImageCountNow, NULL);
-                ASSERT(ImageCountNow == Vk->Swapchain.ImageCount, "Unreachable?");
-                Arena_AllocArray(&Vk->Arena, &SwapchainImages, ImageCount);
-                vkGetSwapchainImagesKHR(Device, Vk->Swapchain.Handle, &ImageCount, SwapchainImages);
+                int MipLevel = 1;
+                MSAABuffer = Vkm_CreateImageAndView(&ResourceGroup->GpuAllocator,
+                    Monitor.Width, Monitor.Height, MipLevel, 
+                    SampleCount, 
+                    Vk->Swapchain.ImageFormat, 
+                    VK_IMAGE_TILING_OPTIMAL, 
+                    VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 
+                    VK_IMAGE_ASPECT_COLOR_BIT
+                );
             }
 
+            VkFormat DepthBufferImageFormat;
+            vkm_image_and_view DepthBuffer;
             {
-                Arena_AllocArray(&Vk->Arena, &SwapchainImageViews, ImageCount);
+                VkFormat DesiredFormats[] = {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D32_SFLOAT};
+                DepthBufferImageFormat = Vulkan_FindSupportedFormat(
+                    GpuContext->PhysicalDevice, 
+                    DesiredFormats, STATIC_ARRAY_SIZE(DesiredFormats), 
+                    VK_IMAGE_TILING_OPTIMAL,
+                    VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+                );
+
                 int MipLevel = 1;
-                for (u32 i = 0; i < ImageCount; i++)
+                DepthBuffer = Vkm_CreateImageAndView(&ResourceGroup->GpuAllocator, 
+                    Monitor.Width, Monitor.Height, MipLevel, 
+                    SampleCount, DepthBufferImageFormat, 
+                    VK_IMAGE_TILING_OPTIMAL, 
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT
+                );
+                Vulkan_TransitionImageLayout(GpuContext, 
+                    Vk->CommandPool, 
+                    Vkm_Image_Get(&ResourceGroup->GpuAllocator, DepthBuffer.ImageHandle).Handle,
+                    DepthBufferImageFormat,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    MipLevel
+                );
+            }
+
+            VkImage *SwapchainImages;
+            VkImageView *SwapchainImageViews;
+            {
+                u32 ImageCount = Vk->Swapchain.ImageCount;
                 {
-                    SwapchainImageViews[i] = Vulkan_CreateImageView(Device, 
-                        SwapchainImages[i], Vk->Swapchain.ImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, MipLevel
-                    );
+                    u32 ImageCountNow;
+                    vkGetSwapchainImagesKHR(Device, Vk->Swapchain.Handle, &ImageCountNow, NULL);
+                    ASSERT(ImageCountNow == Vk->Swapchain.ImageCount, "Unreachable?");
+                    Arena_AllocArray(&Vk->Arena, &SwapchainImages, ImageCount);
+                    vkGetSwapchainImagesKHR(Device, Vk->Swapchain.Handle, &ImageCount, SwapchainImages);
+                }
+
+                {
+                    Arena_AllocArray(&Vk->Arena, &SwapchainImageViews, ImageCount);
+                    int MipLevel = 1;
+                    for (u32 i = 0; i < ImageCount; i++)
+                    {
+                        SwapchainImageViews[i] = Vulkan_CreateImageView(Device, 
+                                SwapchainImages[i], Vk->Swapchain.ImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, MipLevel
+                                );
+                    }
                 }
             }
-        }
 
-        VkRenderPass RenderPass = Vulkan_CreateRenderPass(GpuContext->Device, 
-            SampleCount, Vk->Swapchain.ImageFormat, DepthBufferImageFormat
-        );
+            VkRenderPass RenderPass = Vulkan_CreateRenderPass(GpuContext->Device, 
+                SampleCount, Vk->Swapchain.ImageFormat, DepthBufferImageFormat
+            );
 
-        u32 ImageCount = Vk->Swapchain.ImageCount;
-        VkFramebuffer *Framebuffers;
-        {
-            int SwapchainWidth = Vk->Swapchain.Extent.width;
-            int SwapchainHeight = Vk->Swapchain.Extent.height;
-
-            FreeList_AllocArray(&ResourceGroup->CpuAllocator, &Framebuffers, ImageCount);
-            for (u32 i = 0; i < ImageCount; i++)
+            u32 ImageCount = Vk->Swapchain.ImageCount;
+            VkFramebuffer *Framebuffers;
             {
-                VkImageView Attachments[] = { 
-                    MSAABuffer.ImageView,
-                    DepthBuffer.ImageView,
-                    SwapchainImageViews[i]
-                };
-                VkFramebufferCreateInfo CreateInfo = {
-                    .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-                    .attachmentCount = STATIC_ARRAY_SIZE(Attachments),
-                    .pAttachments = Attachments,
-                    .renderPass = RenderPass,
-                    .width = SwapchainWidth,
-                    .height = SwapchainHeight,
-                    .layers = 1,
-                };
-                VK_CHECK(vkCreateFramebuffer(Device, &CreateInfo, NULL, &Framebuffers[i]));
+                int SwapchainWidth = Vk->Swapchain.Extent.width;
+                int SwapchainHeight = Vk->Swapchain.Extent.height;
+
+                FreeList_AllocArray(&ResourceGroup->CpuAllocator, &Framebuffers, ImageCount);
+                for (u32 i = 0; i < ImageCount; i++)
+                {
+                    VkImageView Attachments[] = { 
+                        MSAABuffer.ImageView,
+                        DepthBuffer.ImageView,
+                        SwapchainImageViews[i]
+                    };
+                    VkFramebufferCreateInfo CreateInfo = {
+                        .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                        .attachmentCount = STATIC_ARRAY_SIZE(Attachments),
+                        .pAttachments = Attachments,
+                        .renderPass = RenderPass,
+                        .width = SwapchainWidth,
+                        .height = SwapchainHeight,
+                        .layers = 1,
+                    };
+                    VK_CHECK(vkCreateFramebuffer(Device, &CreateInfo, NULL, &Framebuffers[i]));
+                }
             }
+
+            VkSemaphore *Semaphores;
+            FreeList_AllocArray(&ResourceGroup->CpuAllocator, &Semaphores, ImageCount);
+            for (uint i = 0; i < ImageCount; i++)
+            {
+                VkSemaphoreCreateInfo CreateInfo = {
+                    .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                };
+                vkCreateSemaphore(Device, &CreateInfo, NULL, &Semaphores[i]);
+            }
+
+            Vk->RenderTarget = (vk_render_target) {
+                .SampleCount = SampleCount,
+
+                .ImageCount = ImageCount,
+                .SwapchainImages = SwapchainImages,
+                .SwapchainImageViews = SwapchainImageViews,
+                .RenderPass = RenderPass,
+                .Framebuffers = Framebuffers,
+
+                .ColorResource = MSAABuffer,
+                .DepthResource = DepthBuffer,
+
+                .OnRenderControlFinish = Semaphores,
+            };
         }
-        Vk->RenderTarget = (vk_render_target) {
-            .SampleCount = SampleCount,
-
-            .ImageCount = ImageCount,
-            .SwapchainImages = SwapchainImages,
-            .SwapchainImageViews = SwapchainImageViews,
-            .RenderPass = RenderPass,
-            .Framebuffers = Framebuffers,
-
-            .ColorResource = MSAABuffer,
-            .DepthResource = DepthBuffer,
-        };
 
         VkFence *Fences;
         VkSemaphore *Semaphores;
@@ -2497,11 +2609,10 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
             };
             VK_CHECK(vkAllocateCommandBuffers(Device, &CommandBufferAllocateInfo, CommandBuffers));
         }
-
         Vk->RenderControl = (vk_render_control) {
             .CommandBuffers = CommandBuffers,
             .BlockCpuWhenFrameIsStillInFlight = Fences,
-            .OnImageAvailableSemaphores = Semaphores,
+            .OnRenderTargetAvailable = Semaphores,
         };
     }
 
@@ -2605,12 +2716,10 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
     if (Vk->GlobalResourceGroup)
     {
         ASSERT(Vk->GlobalResourceGroup->Samplers.Count >= 1);
-        //ASSERT(Vk->GlobalResourceGroup->GraphicsPipelines.Count >= 1);
         ASSERT(Vk->GlobalResourceGroup->Textures.Count >= 1);
         /* NOTE: handle 0 is always the first global handle */
         Vulkan_ResourceGroup_PushSampler(ResourceGroup, Vk->GlobalResourceGroup->Samplers.Data[0]);
         Vulkan_ResourceGroup_PushTexture(ResourceGroup, &Vk->GlobalResourceGroup->Textures.Data[0]);
-        //Vulkan_ResourceGroup_PushGraphicsPipeline(ResourceGroup, &Vk->GlobalResourceGroup->GraphicsPipelines.Data[0]);
     }
 
     /* uniform buffer */
@@ -2996,8 +3105,8 @@ internal void Vulkan_TransferDataToGpuLocalMemory(
         VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
         {
             vkCmdCopyBuffer(CmdBuf, 
-                Vkm_Buffer_GetVkBuffer(&DstOwner->GpuAllocator, Dst),
                 Vkm_Buffer_GetVkBuffer(&Tmp, StagingBuffer),
+                Vkm_Buffer_GetVkBuffer(&DstOwner->GpuAllocator, Dst),
                 1, &(VkBufferCopy) {
                     .dstOffset = Vkm_Buffer_GetOffsetBytes(Dst),
                     .srcOffset = Vkm_Buffer_GetOffsetBytes(StagingBuffer),
@@ -3143,63 +3252,46 @@ renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
     VkDevice Device = Vulkan_GetDevice(Vk);
 
     vk_graphics_pipeline GraphicsPipeline;
+    Arena_Scope(&Vk->Arena)
     {
-#if 0
-        Arena_AllocDynamicArray(&Vk->Arena, &Vk->UniformBuffer, 0, UniformBufferCapacity);
-        Vk->FrameData = Vulkan_CreateFrameData(
-            GpuContext, 
-            Vk->CommandPool,
-            Vk->DescriptorPool, 
-            Vk->DescriptorSetLayout, 
-            Vk->FramesInFlight, 
-            &Vk->TextureArray,
-            UniformBufferCapacity,
-            &Vk->Arena
+        bool32 EnableMSAA = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_MSAA);
+        UNREACHABLE_IF(!EnableMSAA && Vk->RenderTarget.SampleCount != VK_SAMPLE_COUNT_1_BIT, 
+            "MSAASampleCount must be 1 if RENDERER_GFXFT_MSAA is not set in GraphicsPipelineConfig.EnabledGraphicsFeatures"
         );
-#else
-        VkRenderPass RenderPass = Vk->RenderTarget.RenderPass;
-#endif
 
+        VkCullModeFlags CullMode = VK_CULL_MODE_NONE; 
+        VkFrontFace FrontFace = 0;
+        if (IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_BACKFACE_CULLING))
         {
-            bool32 EnableMSAA = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_MSAA);
-            UNREACHABLE_IF(!EnableMSAA && Vk->RenderTarget.SampleCount != VK_SAMPLE_COUNT_1_BIT, 
-                "MSAASampleCount must be 1 if RENDERER_GFXFT_MSAA is not set in GraphicsPipelineConfig.EnabledGraphicsFeatures"
-            );
-
-            VkCullModeFlags CullMode = VK_CULL_MODE_NONE; 
-            VkFrontFace FrontFace = 0;
-            if (IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_BACKFACE_CULLING))
+            CullMode = VK_CULL_MODE_BACK_BIT;
+            switch (Config->CullingDirection)
             {
-                CullMode = VK_CULL_MODE_BACK_BIT;
-                switch (Config->CullingDirection)
-                {
-                case RENDERER_CULLING_CLOCKWISE: FrontFace = VK_FRONT_FACE_CLOCKWISE; break;
-                case RENDERER_CULLING_COUNTER_CLOCKWISE: FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; break;
-                }
+            case RENDERER_CULLING_CLOCKWISE: FrontFace = VK_FRONT_FACE_CLOCKWISE; break;
+            case RENDERER_CULLING_COUNTER_CLOCKWISE: FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; break;
             }
-            vk_graphics_pipeline_config VkConfig = {
-                .CullMode = CullMode,
-                .CullModeFrontFace = FrontFace,
-                .EnableBlending = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_BLENDING),
-                .EnableDepthTesting = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_Z_BUFFER), 
-                .EnableMSAA = EnableMSAA, 
-                .MSAASampleCount = Vk->RenderTarget.SampleCount,
-                .EnableSampleShading = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_SAMPLE_SHADING), 
-                .SampleShadingMin = Config->SampleShadingMin,
-            };
-            GraphicsPipeline = Vulkan_CreateGraphicsPipeline(
-                Device, 
-                RenderPass, 
-                &VkConfig, 
-                &ResourceGroup->DescriptorSetLayout, 1,
-                Config->VertShaderCode,
-                Config->VertShaderCodeSizeBytes,
-                Config->FragShaderCode,
-                Config->FragShaderCodeSizeBytes, 
-                Config->VertexDescription,
-                Vk->Arena
-            );
         }
+        vk_graphics_pipeline_config VkConfig = {
+            .CullMode = CullMode,
+            .CullModeFrontFace = FrontFace,
+            .EnableBlending = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_BLENDING),
+            .EnableDepthTesting = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_Z_BUFFER), 
+            .EnableMSAA = EnableMSAA, 
+            .MSAASampleCount = Vk->RenderTarget.SampleCount,
+            .EnableSampleShading = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_SAMPLE_SHADING), 
+            .SampleShadingMin = Config->SampleShadingMin,
+        };
+        GraphicsPipeline = Vulkan_CreateGraphicsPipeline(
+            Device, 
+            Vk->RenderTarget.RenderPass, 
+            &VkConfig, 
+            &ResourceGroup->DescriptorSetLayout, 1,
+            Config->FragShaderCode,
+            Config->FragShaderCodeSizeBytes,
+            Config->VertShaderCode,
+            Config->VertShaderCodeSizeBytes, 
+            Config->VertexDescription,
+            Vk->Arena
+        );
     }
     u32 Index = Vulkan_ResourceGroup_PushGraphicsPipeline(ResourceGroup, &GraphicsPipeline);
     renderer_graphics_pipeline_handle Handle = { 
@@ -3551,8 +3643,7 @@ void Renderer_CreateGraphicsPipelines(
             renderer_graphics_pipeline_handle Handle = { i + 1 };
             bool32 EnableMSAA = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_MSAA);
             UNREACHABLE_IF(!EnableMSAA && MSAASampleCount != 1, 
-                "MSAASampleCount must be 1 if RENDERER_GFXFT_MSAA is not set in GraphicsPipelineConfigs[%d].EnabledGraphicsFeatures",
-                i
+                "Must have RENDERER_GFXFT_MSAA if MSAA Sample count != 1"
             );
 
             VkCullModeFlags CullMode = VK_CULL_MODE_NONE; 
@@ -3636,7 +3727,7 @@ void Renderer_Destroy(renderer *Vk)
     }
     for (int i = 0; i < Vk->FramesInFlight; i++)
     {
-        vkDestroySemaphore(Device, Vk->RenderControl.OnImageAvailableSemaphores[i], NULL);
+        vkDestroySemaphore(Device, Vk->RenderControl.OnRenderTargetAvailable[i], NULL);
     }
 #else
     VkInstance Instance = Vk->Instance;

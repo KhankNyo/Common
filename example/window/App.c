@@ -91,9 +91,10 @@ internal void InitRenderer(app *App, const char *AppName)
             .CpuBufferPoolSizeBytes = 4096,
             .GpuBufferPoolSizeBytes = 4096,
             .ImagePoolSizeBytes = 4096,
-            .UniformBufferSizeBytes = 0,
 
             .UniformBufferBinding = 0,
+            .UniformBufferSizeBytes = 1,
+
             .TextureArrayBinding = 1,
         };
         App->ResourceGroup = Renderer_CreateResourceGroup(App->Renderer, &Config);
@@ -280,7 +281,7 @@ internal void InitRenderer(app *App, const char *AppName)
             .Stride = sizeof(vertex_buffer),
         };
         renderer_graphics_pipeline_config GraphicsPipelineConfig = {
-            .EnabledGraphicsFeatures = RENDERER_GFXFT_BLENDING,
+            .EnabledGraphicsFeatures = RENDERER_GFXFT_BLENDING|RENDERER_GFXFT_MSAA,
             .VertShaderCode = VertexShaderCode,
             .VertShaderCodeSizeBytes = sizeof VertexShaderCode,
             .FragShaderCode = FragmentShaderCode,
@@ -291,7 +292,7 @@ internal void InitRenderer(app *App, const char *AppName)
         Renderer_BindResourceGroup(App->Renderer, App->ResourceGroup);
 #else
 
-        int MSAASampleCount = 1;
+        int MSAASampleCount = Renderer_IsMSAASampleCountSupported(App->Renderer, 4)? 4 : 1;
         renderer_vertex_attributes VertexAttribs[] = {
             [0] = { /* NOTE: location must match with shader */
                 .Binding = 0, .Location = 0, .Offset = offsetof(vertex_buffer, Color), .Type = RENDERER_TYPE_F32x4,
@@ -308,14 +309,14 @@ internal void InitRenderer(app *App, const char *AppName)
         };
         int GraphicsPipelineCount = 1;
         renderer_graphics_pipeline_config GraphicsPipelineConfig = {
-            .EnabledGraphicsFeatures = RENDERER_GFXFT_BLENDING,
+            .EnabledGraphicsFeatures = RENDERER_GFXFT_BLENDING|RENDERER_GFXFT_MSAA,
             .VertShaderCode = VertexShaderCode,
             .VertShaderCodeSizeBytes = sizeof VertexShaderCode,
             .FragShaderCode = FragmentShaderCode,
             .FragShaderCodeSizeBytes = sizeof FragmentShaderCode,
             .VertexDescription = &VertexDesc,
         };
-        int UniformBufferSizeBytes = 0; /* no uniform buffer */
+        int UniformBufferSizeBytes = 1; /* no uniform buffer */
         Renderer_CreateGraphicsPipelines(App->Renderer, 
             UniformBufferSizeBytes, 
             MSAASampleCount, 

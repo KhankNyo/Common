@@ -385,6 +385,7 @@ force_inline void Renderer__InitDefaultResources(renderer_handle Renderer)
             .Format = RENDERER_IMAGE_FORMAT_RGBA, 
             .Width = 1,
             .Height = 1,
+            .MipLevels = 1,
         };
         u32 Pink = 0xFFFF00FF;
         renderer_texture_handle Texture = Renderer_CreateStaticTexture(Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &TextureConfig, &Pink);

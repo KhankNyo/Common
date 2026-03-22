@@ -24,7 +24,9 @@ header_function void Vulkan_LogLn(const char *Fmt, ...)
 {
     va_list Args;
     va_start(Args, Fmt);
-    bool32 ShouldLog = false;
+    bool32 ShouldLog;
+    DEBUG_ONLY(ShouldLog = true);
+    NOT_DEBUG_ONLY(ShouldLog = false);
     if (ShouldLog)
     {
         vfprintf(stderr, Fmt, Args);
