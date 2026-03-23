@@ -4,6 +4,8 @@
 #include "Common.h"
 #include "Common-Vulkan.h"
 
+#define NEW_VKM_API
+
 typedef_struct(vkm);
 typedef_struct(vkm_buffer);
 typedef_struct(vkm_buffer_pool);
@@ -68,6 +70,99 @@ struct vkm_image_and_view
     VkImageAspectFlags Aspect;
 };
 
+
+#ifdef NEW_VKM_API
+#include "Arena.h"
+
+typedef_struct(vkm_config);
+typedef handle(u64) vkm_buffer_handle;
+typedef_struct(vkm_buffer_info);
+typedef_struct(vkm_image_info);
+typedef_struct(vkm_image_config);
+
+typedef enum 
+{
+    VKM_BUFFER_TYPE_STAGING = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+    VKM_BUFFER_TYPE_UBO = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+    VKM_BUFFER_TYPE_VBO = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+    VKM_BUFFER_TYPE_EBO = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+    VKM_BUFFER_TYPE_SSBO = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+#define VKM_BUFFER_TYPE_COUNT 5
+} vkm_buffer_type;
+
+struct vkm_device_memory
+{
+    VkDeviceMemory Handle;
+    i64 Capacity;
+    i64 Offset;
+    vkm_device_memory *Next;
+};
+struct vkm
+{
+    VkDevice Device;
+    VkPhysicalDevice PhysicalDevice;
+
+    vkm_device_memory *DeviceMemoryHead[VK_MAX_MEMORY_TYPES];
+};
+struct vkm_config
+{
+    arena_alloc *Arena;
+    VkDevice Device;
+    VkPhysicalDevice PhysicalDevice;
+    i64 InitialBufferMemoryCapacity[VKM_MEMORY_TYPE_COUNT];
+    i64 InitialImageMemoryCapacity;
+};
+struct vkm_buffer_info 
+{
+    VkBuffer VkBuffer;
+    VkDeviceMemory VkDeviceMemory;
+    i64 MemoryOffset;
+    i64 CapacityBytes;
+    vkm_memory_type MemoryType;
+    vkm_buffer_type BufferType;
+};
+struct vkm_image_info
+{
+    VkImage Handle;
+    VkDeviceMemory MemoryHandle;
+    i64 MemoryOffset;
+    i64 CapacityBytes;
+    vkm_memory_type MemoryType;
+    VkImageUsageFlags Usage;
+    VkFormat Format;
+    VkSampleCountFlagBits Samples;
+    VkImageTiling Tiling;
+    u32 Width, Height;
+    u32 MipLevels;
+};
+
+struct vkm_image_config
+{
+    u32 Width, Height;
+    u32 MipLevels;
+    VkSampleCountFlagBits Samples;
+    VkFormat Format;
+    VkImageUsageFlagBits Usage;
+};
+
+void Vkm_Create(vkm *Vkm, const vkm_config *Config);
+void Vkm_Destroy(vkm *Vkm);
+vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, vkm_memory_type MemoryType, vkm_buffer_type BufferType, i64 BufferSizeBytes);
+vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config);
+VkImageView Vkm_CreateImageView(vkm *Vkm, vkm_image Image);
+
+void Vkm_DestroyImageView(vkm *Vkm, VkImageView);
+
+void Vkm_ResizeBuffer(vkm *Vkm, vkm_buffer_handle BufferHandle, i64 NewSizeBytes);
+void Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u32 NewWidth, u32 NewHeight);
+
+void *Vkm_MapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle);
+void Vkm_UnmapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle, void *MappedMemory);
+
+vkm_buffer_info Vkm_GetBufferInfo(vkm *Vkm, vkm_buffer_handle BufferHandle);
+vkm_image_info Vkm_GetImageInfo(vkm *Vkm, vkm_image_handle ImageHandle);
+
+#else
 struct vkm
 {
     VkDevice Device;
@@ -161,6 +256,7 @@ VkBuffer Vkm_Buffer_GetVkBuffer(const vkm *Vkm, vkm_buffer Buffer);
 void *Vkm_Buffer_GetMappedMemory(vkm *Vkm, vkm_buffer Buffer);
 
 vkm_image_and_view Vkm_ImageAndView_Resize(vkm *Vkm, vkm_image_and_view Iav, u32 NewWidth, u32 NewHeight);
+#endif
 
 #endif /* COMMON_RENDERER_VULKAN_VKMALLOC_H */
 

@@ -4,6 +4,15 @@
 #include "Memory.h"
 
 /* init */
+#ifdef NEW_VKM_API
+
+void Vkm_Create(vkm *Vkm, const vkm_config *Config)
+{
+}
+
+
+#else
+
 #define Vkm__Buffer_Init(memory_type, pool_index, offset_bytes, size_bytes) (vkm_buffer) {.Info = \
         (u64)(memory_type) << 62\
         | (u64)(pool_index) << 56\
@@ -470,3 +479,4 @@ vkm_image_and_view Vkm_ImageAndView_Resize(vkm *Vkm, vkm_image_and_view Iav, u32
 
 
 
+#endif
