@@ -48,6 +48,9 @@ struct arena__node
 force_inline void Arena_Create(arena_alloc *Arena, memory_alloc_interface UserAlloc, i64 PoolSizeBytes, u32 Alignment);
 force_inline void Arena_Destroy(arena_alloc *Arena);
 force_inline void Arena_Reset(arena_alloc *Arena);
+
+memory_alloc_interface Arena_AsAllocInterface(arena_alloc *Arena);
+
 header_function isize Arena_GetAllocatedSize(const arena_alloc *Arena);
 header_function isize Arena_GetAllocatedCapacity(const arena_alloc *Arena);
 void *Arena_Alloc(arena_alloc *Arena, i64 SizeBytes);
@@ -226,12 +229,43 @@ force_inline bool32 Arena_TryPopContext(arena_alloc *Arena, arena_context *Conte
 
 
 
+#define ARENA_IMPLEMENTATION
 #if defined(ARENA_IMPLEMENTATION) && !defined(ARENA_ALREADY_IMPLEMENTED)
 #define ARENA_ALREADY_IMPLEMENTED
 
 #include <string.h> /* memset */
 
 
+internal void *Arena__InterfaceAllocRoutine(void *UserData, const memory_alloc_parameter *Param)
+{
+    arena_alloc *Arena = UserData;
+    switch (Param->Mode)
+    {
+    case ALLOCATOR_ALLOCATE:
+    {
+        void *Result;
+        Arena_ScopedAlignment(Arena, Param->As.Allocate.Alignment)
+        {
+            Result = Arena_Alloc(Arena, Param->As.Allocate.SizeBytes);
+        }
+        return Result;
+    } break;
+    case ALLOCATOR_FREE:
+    {
+        /* nop */
+    } break;
+    }
+    return NULL;
+}
+
+memory_alloc_interface Arena_AsAllocInterface(arena_alloc *Arena)
+{
+    memory_alloc_interface Interface = {
+        .UserData = Arena,
+        .Routine = Arena__InterfaceAllocRoutine,
+    };
+    return Interface;
+}
 
 internal void *Arena__PushNewNodeAndAllocateBuffer(arena_alloc *Arena, arena__node *Next, i64 BufferSizeBytes, u32 Alignment)
 {
