@@ -6,6 +6,161 @@
 
 #define NEW_VKM_API
 
+
+#ifdef NEW_VKM_API
+#include "Arena.h"
+#include "FreeList.h"
+
+#define VKM_MIN_BUFFER_ALIGNMENT 64
+#define VKM_MAX_BUFFER_COUNT 127 /* per buffer type */
+
+typedef_struct(vkm);
+typedef_struct(vkm_config);
+typedef_struct(vkm_image_config);
+typedef_struct(vkm_image_pool_entry);
+typedef_struct(vkm_image_info);
+typedef_struct(vkm_buffer_config);
+typedef_struct(vkm_buffer_pool_entry);
+typedef_struct(vkm_buffer_info);
+typedef_struct(vkm_device_memory);
+
+/* index into image pool */
+typedef handle(u32) vkm_image_handle;
+
+/*
+ * Value[2:0]   -> vkm_buffer_type BufferType
+ * Value[9:3]   -> u7 IndexIntoBufferPool
+ * Value[36:10] -> u27 BufferOffsetAligned  // offset in bytes * alignment
+ * Value[63:37] -> u27 BufferSizeAligned    // size in bytes * alignment
+ */
+typedef handle(u64) vkm_buffer_handle;
+
+typedef dynamic_array(vkm_buffer_pool_entry) vkm_buffer_pool;
+typedef dynamic_array(vkm_image_pool_entry) vkm_image_pool;
+
+
+typedef enum 
+{
+    VKM_BUFFER_TYPE_STAGING = 0,
+    VKM_BUFFER_TYPE_UBO = 1,
+    VKM_BUFFER_TYPE_VBO = 2,
+    VKM_BUFFER_TYPE_EBO = 3,
+    VKM_BUFFER_TYPE_SSBO = 4,
+#define VKM_BUFFER_TYPE_COUNT 5
+} vkm_buffer_type;
+
+struct vkm_device_memory
+{
+    vkm_device_memory *Next;
+    VkDeviceMemory Handle;
+    i64 RemainBytes;
+    i64 CapacityBytes;
+    VkMemoryPropertyFlagBits MemoryProperties;
+    int MemoryTypeIndex;
+};
+struct vkm_buffer_info 
+{
+    VkBuffer Buffer;
+    VkDeviceMemory DeviceMemory;
+    i64 OffsetBytes;
+    i64 CapacityBytes;
+    int MemoryTypeIndex;
+    vkm_buffer_type BufferType;
+};
+struct vkm_image_info
+{
+    VkImage Image;
+    VkImageView ImageView;
+    VkDeviceMemory DeviceMemory;
+    i64 OffsetBytes;
+    i64 CapacityBytes;
+    int MemoryTypeIndex;
+    VkImageUsageFlags Usage;
+    VkFormat Format;
+    VkSampleCountFlagBits Samples;
+    VkImageTiling Tiling;
+    u16 PixelSizeBytes;
+    u16 Width;
+    u16 Height;
+    u16 MipLevels;
+};
+struct vkm_buffer_pool_entry
+{
+    VkBuffer Buffer;
+    vkm_device_memory *DeviceMemory;
+    u32 Alignment;
+};
+struct vkm_image_pool_entry
+{
+    VkImage Image;
+    VkImageView ImageView;
+    VkDeviceMemory DeviceMemory;
+    i64 OffsetBytes;
+    i64 CapacityBytes;
+    int MemoryTypeIndex;
+    VkImageUsageFlags Usage;
+    VkFormat Format;
+    VkSampleCountFlagBits Samples;
+    VkImageTiling Tiling;
+    u16 PixelSizeBytes;
+    u16 Width;
+    u16 Height;
+    u16 MipLevels;
+};
+
+struct vkm_config
+{
+    VkDevice Device;
+    VkPhysicalDevice PhysicalDevice;
+    i64 DeviceMemoryPoolCapacityBytes;
+};
+struct vkm
+{
+    arena_alloc *Arena;
+    freelist_alloc FreeList;
+    VkDevice Device;
+    VkPhysicalDevice PhysicalDevice;
+    i64 DeviceMemoryPoolCapacityBytes;
+
+    vkm_device_memory *DeviceMemoryPoolHead[VK_MAX_MEMORY_TYPES];
+    vkm_buffer_pool BufferPool[VKM_BUFFER_TYPE_COUNT];
+    vkm_image_pool ImagePool;
+};
+
+struct vkm_image_config
+{
+    i64 MemoryCapacityBytes; /* 0 implies that MemoryCapacityBytes = Width*Height*pixel_size_bytes */
+    u16 Width;
+    u16 Height;
+    u16 MipLevels;
+    VkSampleCountFlagBits Samples;
+    VkFormat Format;
+    VkImageUsageFlagBits Usage;
+};
+struct vkm_buffer_config
+{
+    i64 MemoryCapacityBytes;
+    vkm_buffer_type BufferType;
+};
+
+
+void Vkm_Create(vkm *Vkm, arena_alloc *Arena, const vkm_config *Config);
+void Vkm_Destroy(vkm *Vkm);
+vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, const vkm_buffer_config *Config);
+vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config);
+
+void Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u32 NewWidth, u32 NewHeight);
+
+/* map will only succeed if the buffer is VKM_BUFFER_TYPE_STAGING or VKM_BUFFER_TYPE_UBO */
+void *Vkm_MapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle);
+void Vkm_UnmapBufferMemory(vkm *Vkm, void *MappedMemory);
+
+vkm_buffer_info Vkm_GetBufferInfo(vkm *Vkm, vkm_buffer_handle BufferHandle);
+vkm_image_info Vkm_GetImageInfo(vkm *Vkm, vkm_image_handle ImageHandle);
+
+#else
+
+
 typedef_struct(vkm);
 typedef_struct(vkm_buffer);
 typedef_struct(vkm_buffer_pool);
@@ -71,98 +226,7 @@ struct vkm_image_and_view
 };
 
 
-#ifdef NEW_VKM_API
-#include "Arena.h"
 
-typedef_struct(vkm_config);
-typedef handle(u64) vkm_buffer_handle;
-typedef_struct(vkm_buffer_info);
-typedef_struct(vkm_image_info);
-typedef_struct(vkm_image_config);
-
-typedef enum 
-{
-    VKM_BUFFER_TYPE_STAGING = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-    VKM_BUFFER_TYPE_UBO = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-    VKM_BUFFER_TYPE_VBO = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-    VKM_BUFFER_TYPE_EBO = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-    VKM_BUFFER_TYPE_SSBO = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-#define VKM_BUFFER_TYPE_COUNT 5
-} vkm_buffer_type;
-
-struct vkm_device_memory
-{
-    VkDeviceMemory Handle;
-    i64 Capacity;
-    i64 Offset;
-    vkm_device_memory *Next;
-};
-struct vkm
-{
-    VkDevice Device;
-    VkPhysicalDevice PhysicalDevice;
-
-    vkm_device_memory *DeviceMemoryHead[VK_MAX_MEMORY_TYPES];
-};
-struct vkm_config
-{
-    arena_alloc *Arena;
-    VkDevice Device;
-    VkPhysicalDevice PhysicalDevice;
-    i64 InitialBufferMemoryCapacity[VKM_MEMORY_TYPE_COUNT];
-    i64 InitialImageMemoryCapacity;
-};
-struct vkm_buffer_info 
-{
-    VkBuffer VkBuffer;
-    VkDeviceMemory VkDeviceMemory;
-    i64 MemoryOffset;
-    i64 CapacityBytes;
-    vkm_memory_type MemoryType;
-    vkm_buffer_type BufferType;
-};
-struct vkm_image_info
-{
-    VkImage Handle;
-    VkDeviceMemory MemoryHandle;
-    i64 MemoryOffset;
-    i64 CapacityBytes;
-    vkm_memory_type MemoryType;
-    VkImageUsageFlags Usage;
-    VkFormat Format;
-    VkSampleCountFlagBits Samples;
-    VkImageTiling Tiling;
-    u32 Width, Height;
-    u32 MipLevels;
-};
-
-struct vkm_image_config
-{
-    u32 Width, Height;
-    u32 MipLevels;
-    VkSampleCountFlagBits Samples;
-    VkFormat Format;
-    VkImageUsageFlagBits Usage;
-};
-
-void Vkm_Create(vkm *Vkm, const vkm_config *Config);
-void Vkm_Destroy(vkm *Vkm);
-vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, vkm_memory_type MemoryType, vkm_buffer_type BufferType, i64 BufferSizeBytes);
-vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config);
-VkImageView Vkm_CreateImageView(vkm *Vkm, vkm_image Image);
-
-void Vkm_DestroyImageView(vkm *Vkm, VkImageView);
-
-void Vkm_ResizeBuffer(vkm *Vkm, vkm_buffer_handle BufferHandle, i64 NewSizeBytes);
-void Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u32 NewWidth, u32 NewHeight);
-
-void *Vkm_MapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle);
-void Vkm_UnmapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle, void *MappedMemory);
-
-vkm_buffer_info Vkm_GetBufferInfo(vkm *Vkm, vkm_buffer_handle BufferHandle);
-vkm_image_info Vkm_GetImageInfo(vkm *Vkm, vkm_image_handle ImageHandle);
-
-#else
 struct vkm
 {
     VkDevice Device;
