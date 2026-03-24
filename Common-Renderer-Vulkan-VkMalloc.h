@@ -18,7 +18,6 @@ typedef_struct(vkm);
 typedef_struct(vkm_config);
 typedef_struct(vkm_image_config);
 typedef_struct(vkm_image_pool_entry);
-typedef_struct(vkm_image_info);
 typedef_struct(vkm_buffer_config);
 typedef_struct(vkm_buffer_pool_entry);
 typedef_struct(vkm_buffer_info);
@@ -37,6 +36,7 @@ typedef handle(u64) vkm_buffer_handle;
 
 typedef dynamic_array(vkm_buffer_pool_entry) vkm_buffer_pool;
 typedef dynamic_array(vkm_image_pool_entry) vkm_image_pool;
+typedef struct vkm_image_pool_entry vkm_image_info;
 
 
 typedef enum 
@@ -66,23 +66,6 @@ struct vkm_buffer_info
     i64 CapacityBytes;
     int MemoryTypeIndex;
     vkm_buffer_type BufferType;
-};
-struct vkm_image_info
-{
-    VkImage Image;
-    VkImageView ImageView;
-    VkDeviceMemory DeviceMemory;
-    i64 OffsetBytes;
-    i64 CapacityBytes;
-    int MemoryTypeIndex;
-    VkImageUsageFlags Usage;
-    VkFormat Format;
-    VkSampleCountFlagBits Samples;
-    VkImageTiling Tiling;
-    u16 PixelSizeBytes;
-    u16 Width;
-    u16 Height;
-    u16 MipLevels;
 };
 struct vkm_buffer_pool_entry
 {
@@ -136,6 +119,8 @@ struct vkm_image_config
     VkSampleCountFlagBits Samples;
     VkFormat Format;
     VkImageUsageFlagBits Usage;
+    VkImageTiling Tiling;
+    VkImageAspectFlagBits Aspect;
 };
 struct vkm_buffer_config
 {

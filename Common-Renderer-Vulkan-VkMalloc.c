@@ -306,6 +306,84 @@ vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, const vkm_buffer_config *Config)
 
 vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config)
 {
+    VkImage Image;
+    {
+        VkImageCreateInfo ImageCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .tiling = Config->Tiling, 
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .usage = Config->Usage,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .samples = Config->Samples,
+            .format = Config->Format,
+            .extent = {
+                .depth = 1,
+                .width = Config->Width, 
+                .height = Config->Height,
+            },
+            .mipLevels = Config->MipLevels,
+            .arrayLayers = 1,
+            .flags = 0,
+        };
+        VK_CHECK(vkCreateImage(Vkm->Device, &ImageCreateInfo, NULL, &Image));
+    }
+
+    VkMemoryRequirements MemoryRequirements;
+    vkGetImageMemoryRequirements(Vkm->Device, Image, &MemoryRequirements);
+
+    vkm_device_memory *DeviceMemory = Vkm__GetDeviceMemory(Vkm, MemoryRequirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    VkImageView ImageView;
+    {
+        VkImageViewCreateInfo ImageViewCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = Image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = Config->Format,
+            .components = { /* default mapping, use channel values */
+                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            .subresourceRange = {
+                .aspectMask = Config->Aspect, 
+                .baseMipLevel = 0, 
+                .levelCount = Config->MipLevels,
+                .baseArrayLayer = 0,
+                .layerCount = 1, 
+            },
+        };
+        VK_CHECK(vkCreateImageView(Vkm->Device, &ImageViewCreateInfo, NULL, &ImageView));
+    }
+
+    i64 PixelSizeBytes = 4;
+    i64 RealCapacityBytes = Config->MemoryCapacityBytes == 0
+        ? (i64)Config->Width * Config->Height * PixelSizeBytes
+        : Config->MemoryCapacityBytes;
+    i64 SizeBytes = Memory_AlignSize(RealCapacityBytes, MemoryRequirements.alignment);
+    i64 OffsetBytes = Memory_AlignSize(DeviceMemory->CapacityBytes - DeviceMemory->RemainBytes, MemoryRequirements.alignment);
+    VkDynamicArray_Push(&Vkm->FreeList, &Vkm->ImagePool, (vkm_image_pool_entry) {
+        .Image = Image,
+        .ImageView = ImageView, 
+        .DeviceMemory = DeviceMemory->Handle,
+        .OffsetBytes = OffsetBytes,
+        .CapacityBytes = RealCapacityBytes,
+        .MemoryTypeIndex = DeviceMemory->MemoryTypeIndex,
+        .Usage = Config->Usage,
+        .Format = Config->Format,
+        .Samples = Config->Samples,
+        .Tiling = Config->Tiling,
+        .MipLevels = Config->MipLevels,
+        .Width = Config->Width,
+        .Height = Config->Height,
+        .PixelSizeBytes = PixelSizeBytes,
+    });
+    vkm_image_handle Handle = {
+        .Value = Vkm->ImagePool.Count - 1,
+    };
+    return Handle;
 }
 
 
@@ -348,6 +426,9 @@ vkm_buffer_info Vkm_GetBufferInfo(vkm *Vkm, vkm_buffer_handle BufferHandle)
 
 vkm_image_info Vkm_GetImageInfo(vkm *Vkm, vkm_image_handle ImageHandle)
 {
+    ASSERT(ImageHandle.Value < Vkm->ImagePool.Count);
+    vkm_image_pool_entry *Entry = &Vkm->ImagePool.Data[ImageHandle.Value];
+    return *Entry;
 }
 
 
