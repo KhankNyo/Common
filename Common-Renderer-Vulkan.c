@@ -2501,6 +2501,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
                         .Aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
                     }
                 );
+                DepthBufferInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, DepthBuffer);
                 Vulkan_TransitionImageLayout(GpuContext, 
                     Vk->CommandPool, 
                     DepthBufferInfo.Image,
@@ -2509,7 +2510,6 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
                     VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                     DepthBufferInfo.MipLevels
                 );
-                DepthBufferInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, DepthBuffer);
             }
 
             VkImage *SwapchainImages;
@@ -3127,7 +3127,7 @@ internal void Vulkan_TransferDataToGpuLocalMemory(
 
             VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
             {
-                vkCmdCopyBuffer(CmdBuf, 
+                vkCmdCopyBuffer(CmdBuf,
                     StagingBufferInfo.Buffer,
                     DstBufferInfo.Buffer,
                     1, &(VkBufferCopy) {

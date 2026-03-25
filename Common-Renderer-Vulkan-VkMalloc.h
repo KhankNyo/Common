@@ -63,7 +63,9 @@ struct vkm_device_memory
 {
     VkDeviceMemory Handle;
     VkMemoryPropertyFlags MemoryProperties;
+    void *MappedMemory; /* for staging and UBO only */
     i32 CapacityAligned;
+    u16 MapCount;
     i8 MemoryTypeIndex;
 };
 struct vkm_device_memory_node
@@ -186,7 +188,7 @@ vkm_image_handle Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 New
 
 /* map will only succeed if the buffer is VKM_BUFFER_TYPE_STAGING or VKM_BUFFER_TYPE_UBO */
 void *Vkm_MapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle);
-void Vkm_UnmapBufferMemory(vkm *Vkm, void *MappedMemory);
+void Vkm_UnmapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle, void *MappedMemory);
 
 vkm_buffer_info Vkm_GetBufferInfo(const vkm *Vkm, vkm_buffer_handle BufferHandle);
 vkm_image_info Vkm_GetImageInfo(const vkm *Vkm, vkm_image_handle ImageHandle);
