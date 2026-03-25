@@ -65,8 +65,9 @@ internal PFN_vkDestroyDebugReportCallbackEXT g_VkDestroyDebugReportCallbackEXT;
 
 #ifdef NEW_API
 
-#define VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT (4*KB) /* must be powers of 2 for pointer tagging */
+#define VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT (VKM_MAX_BUFFER_INDEX+1) /* must be powers of 2 for pointer tagging */
 STATIC_ASSERT(sizeof(vk_resource_group) >= VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT, "vk_resource_group needs to be big for pointer tagging");
+STATIC_ASSERT(IS_POWER_OF_2(VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT), "must be powers of 2 for pointer tagging");
 
 typedef struct 
 {
@@ -165,6 +166,7 @@ internal VkBool32 Vulkan_DebugCallback(
     {
         Vulkan_LogLn("\nWARNING: [%s] Code %d : %s", pLayerPrefix, MsgCode, Msg);
     }
+    UNREACHABLE();
     return VK_FALSE;
 }
 
@@ -1339,11 +1341,11 @@ internal void Vulkan_TransitionImageLayout(
 }
 
 
-internal vkm_image_and_view Vulkan_CreateDepthBuffer(
+internal vkm_image_handle Vulkan_CreateDepthBuffer(
     vk_gpu_context *GpuContext, VkCommandPool CommandPool, 
     VkSampleCountFlagBits Samples, u32 Width, u32 Height
 ) {
-    vkm_image_and_view DepthBuffer;
+    vkm_image_handle DepthBuffer;
     {
         VkFormat DepthFormat;
         {
@@ -1355,60 +1357,65 @@ internal vkm_image_and_view Vulkan_CreateDepthBuffer(
             );
         }
 
-        int MipLevel = 1;
         vkm *Vkm = &GpuContext->VkMalloc;
-        DepthBuffer = Vkm_CreateImageAndView(
-            &GpuContext->VkMalloc, 
-            Width, Height, MipLevel, 
-            Samples, 
-            DepthFormat, 
-            VK_IMAGE_TILING_OPTIMAL, 
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 
-            VK_IMAGE_ASPECT_DEPTH_BIT
+        DepthBuffer = Vkm_CreateImage(
+            Vkm,
+            &(vkm_image_config) {
+                .Width = Width, 
+                .Height = Height, 
+                .MipLevels = 1, 
+                .Samples = Samples,
+                .Format = DepthFormat,
+                .Tiling = VK_IMAGE_TILING_OPTIMAL, 
+                .Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 
+                .Aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
+            }
         );
+        vkm_image_info DepthBufferInfo = Vkm_GetImageInfo(Vkm, DepthBuffer);
 
         Vulkan_TransitionImageLayout(GpuContext, CommandPool, 
-            Vkm_Image_Get(Vkm, DepthBuffer.ImageHandle).Handle, 
+            DepthBufferInfo.Image,
             DepthFormat, 
             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 
-            MipLevel
+            DepthBufferInfo.MipLevels
         );
     }
     return DepthBuffer;
 }
 
-internal vkm_image_and_view Vulkan_ResizeDepthBuffer(
+internal void Vulkan_ResizeDepthBuffer(
     vk_gpu_context *GpuContext, VkCommandPool CommandPool, 
-    vkm_image_and_view DepthBuffer, 
+    vkm_image_handle DepthBuffer, 
     u32 NewWidth, u32 NewHeight
 ) {
-    vkm_image_and_view NewDepthBuffer;
-    {
-        vkm *Vkm = &GpuContext->VkMalloc;
-        NewDepthBuffer = Vkm_ImageAndView_Resize(Vkm, DepthBuffer, NewWidth, NewHeight);
-        Vulkan_TransitionImageLayout(GpuContext, CommandPool, 
-            Vkm_Image_Get(Vkm, DepthBuffer.ImageHandle).Handle, 
-            Vkm_Image_Get(Vkm, DepthBuffer.ImageHandle).Format, 
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 
-            Vkm_Image_Get(Vkm, DepthBuffer.ImageHandle).MipLevels 
-        );
-    }
-    return NewDepthBuffer;
+    vkm *Vkm = &GpuContext->VkMalloc;
+    Vkm_ResizeImage(Vkm, DepthBuffer, NewWidth, NewHeight);
+
+    vkm_image_info DepthBufferInfo = Vkm_GetImageInfo(Vkm, DepthBuffer);
+    Vulkan_TransitionImageLayout(GpuContext, CommandPool, 
+        DepthBufferInfo.Image,
+        DepthBufferInfo.Format,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 
+        DepthBufferInfo.MipLevels
+    );
 }
 
-internal vkm_image_and_view Vulkan_CreateColorResource(
+internal vkm_image_handle Vulkan_CreateColorResource(
     vk_gpu_context *GpuContext, 
     VkSampleCountFlagBits Samples, VkFormat Format, u32 Width, u32 Height)
 {
-    int MipLevel = 1;
-    vkm_image_and_view MSAAResolve = Vkm_CreateImageAndView(
+    vkm_image_handle MSAAResolve = Vkm_CreateImage(
         &GpuContext->VkMalloc, 
-        Width, Height, MipLevel, 
-        Samples, 
-        Format, 
-        VK_IMAGE_TILING_OPTIMAL, 
-        VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 
-        VK_IMAGE_ASPECT_COLOR_BIT
+        &(vkm_image_config) {
+            .Width = Width, 
+            .Height = Height, 
+            .MipLevels = 1, 
+            .Samples = Samples, 
+            .Format = Format, 
+            .Tiling = VK_IMAGE_TILING_OPTIMAL, 
+            .Usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 
+            .Aspect = VK_IMAGE_ASPECT_COLOR_BIT
+        }
     );
     return MSAAResolve;
 }
@@ -1603,17 +1610,16 @@ internal void Vulkan_RecordCommandBuffer(
                     vkCmdSetScissor(CmdBuffer, 0, 1, &Scissor);
                     ASSERT(Mesh->IndexCount, "handle: %llu", (long long unsigned)Group->MeshHandle.Value);
 
-                    VkBuffer VertexBuffers[] = { Vkm_Buffer_GetVkBuffer(&Vk->CurrentlyBoundResourceGroup->GpuAllocator, Mesh->VertexBuffer) };
+                    vkm_buffer_info VertexBufferInfo = Vkm_GetBufferInfo(&Vk->CurrentlyBoundResourceGroup->GpuAllocator, Mesh->VertexBuffer);
+                    vkm_buffer_info IndexBufferInfo = Vkm_GetBufferInfo(&Vk->CurrentlyBoundResourceGroup->GpuAllocator, Mesh->IndexBuffer);
+
+                    VkBuffer VertexBuffers[] = { VertexBufferInfo.Buffer };
                     ASSERT(VertexBuffers[0] != NULL, "Did you bind the correct resource group before draw call?");
 
-                    VkDeviceSize Offsets[] = { Vkm_Buffer_GetOffsetBytes(Mesh->VertexBuffer) };
+                    VkDeviceSize Offsets[] = { VertexBufferInfo.OffsetBytes };
                     vkCmdBindVertexBuffers(CmdBuffer, 0, 1, VertexBuffers, Offsets);
 
-                    vkCmdBindIndexBuffer(CmdBuffer, 
-                        Vkm_Buffer_GetVkBuffer(&Vk->CurrentlyBoundResourceGroup->GpuAllocator, Mesh->IndexBuffer), 
-                        Vkm_Buffer_GetOffsetBytes(Mesh->IndexBuffer), 
-                        VK_INDEX_TYPE_UINT32
-                    );
+                    vkCmdBindIndexBuffer(CmdBuffer, IndexBufferInfo.Buffer, IndexBufferInfo.OffsetBytes, VK_INDEX_TYPE_UINT32);
 
                     VkDescriptorSet *CurrentDescriptorSet = Vk->CurrentlyBoundResourceGroup->DescriptorSets + Vk->CurrentFrame;
                     vkCmdBindDescriptorSets(CmdBuffer, 
@@ -2354,29 +2360,23 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
 
     /* initialize custom memory allocator */
     {
-        Vk->GpuBufferUsageFlags[VKM_MEMORY_TYPE_CPU_VISIBLE] = 
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT; 
-        Vk->GpuBufferUsageFlags[VKM_MEMORY_TYPE_GPU_LOCAL] = 
-            VK_BUFFER_USAGE_INDEX_BUFFER_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        Vk->GpuMemoryProperties[VKM_MEMORY_TYPE_GPU_LOCAL] = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        Vk->GpuMemoryProperties[VKM_MEMORY_TYPE_CPU_VISIBLE] = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-        i64 BufferPoolCapacity[] = {
-            [VKM_MEMORY_TYPE_GPU_LOCAL] = 32*MB,
-            [VKM_MEMORY_TYPE_CPU_VISIBLE] = 64*MB,
+        vkm_config VkmConfig = {
+            .Device = Device,
+            .PhysicalDevice = GpuContext->PhysicalDevice,
+            .DeviceMemoryPoolCapacityBytes = 64*MB,
         };
-        i64 ImagePoolCapacity = 64*MB;
-        Vkm_Create(&GpuContext->VkMalloc, 
-            Device, 
-            GpuContext->PhysicalDevice, 
-            ImagePoolCapacity,
-            BufferPoolCapacity,
-            Vk->GpuBufferUsageFlags, 
-            Vk->GpuMemoryProperties
+        Vkm_Create(
+            &GpuContext->VkMalloc, 
+            Arena,
+            &VkmConfig
         );
 
-        GpuContext->StagingBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_CPU_VISIBLE, 64*MB);
-        GpuContext->StagingBufferPtr = Vkm_Buffer_GetMappedMemory(&GpuContext->VkMalloc, GpuContext->StagingBuffer);
+        vkm_buffer_config StagingBufferConfig = {
+            .BufferType = VKM_BUFFER_TYPE_STAGING,
+            .MemoryCapacityBytes = 64*MB,
+        };
+        GpuContext->StagingBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, &StagingBufferConfig);
+        GpuContext->StagingBufferPtr = Vkm_MapBufferMemory(&GpuContext->VkMalloc, GpuContext->StagingBuffer);
     }
 
 
@@ -2457,21 +2457,28 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
             VkDevice Device = GpuContext->Device;
             VkSampleCountFlags SampleCount = Vulkan_GetVkSampleCountFlags(&Vk->Gpus.Selected, MSAASampleCount);
 
-            vkm_image_and_view MSAABuffer;
+            vkm_image_handle MSAABuffer;
+            vkm_image_info MSAABufferInfo;
             {
-                int MipLevel = 1;
-                MSAABuffer = Vkm_CreateImageAndView(&ResourceGroup->GpuAllocator,
-                    Monitor.Width, Monitor.Height, MipLevel, 
-                    SampleCount, 
-                    Vk->Swapchain.ImageFormat, 
-                    VK_IMAGE_TILING_OPTIMAL, 
-                    VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 
-                    VK_IMAGE_ASPECT_COLOR_BIT
+                MSAABuffer = Vkm_CreateImage(
+                    &ResourceGroup->GpuAllocator,
+                    &(vkm_image_config) {
+                        .Width = Monitor.Width, 
+                        .Height = Monitor.Height, 
+                        .MipLevels = 1, 
+                        .Samples = SampleCount, 
+                        .Format = Vk->Swapchain.ImageFormat, 
+                        .Tiling = VK_IMAGE_TILING_OPTIMAL, 
+                        .Usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 
+                        .Aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                    }
                 );
+                MSAABufferInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, MSAABuffer);
             }
 
             VkFormat DepthBufferImageFormat;
-            vkm_image_and_view DepthBuffer;
+            vkm_image_handle DepthBuffer;
+            vkm_image_info DepthBufferInfo;
             {
                 VkFormat DesiredFormats[] = {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D32_SFLOAT};
                 DepthBufferImageFormat = Vulkan_FindSupportedFormat(
@@ -2481,22 +2488,28 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
                     VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
                 );
 
-                int MipLevel = 1;
-                DepthBuffer = Vkm_CreateImageAndView(&ResourceGroup->GpuAllocator, 
-                    Monitor.Width, Monitor.Height, MipLevel, 
-                    SampleCount, DepthBufferImageFormat, 
-                    VK_IMAGE_TILING_OPTIMAL, 
-                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT
+                DepthBuffer = Vkm_CreateImage(
+                    &ResourceGroup->GpuAllocator, 
+                    &(vkm_image_config) {
+                        .Width = Monitor.Width, 
+                        .Height = Monitor.Height, 
+                        .MipLevels = 1, 
+                        .Samples = SampleCount, 
+                        .Format = DepthBufferImageFormat, 
+                        .Tiling = VK_IMAGE_TILING_OPTIMAL, 
+                        .Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                        .Aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
+                    }
                 );
                 Vulkan_TransitionImageLayout(GpuContext, 
                     Vk->CommandPool, 
-                    Vkm_Image_Get(&ResourceGroup->GpuAllocator, DepthBuffer.ImageHandle).Handle,
+                    DepthBufferInfo.Image,
                     DepthBufferImageFormat,
                     VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                    MipLevel
+                    DepthBufferInfo.MipLevels
                 );
+                DepthBufferInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, DepthBuffer);
             }
 
             VkImage *SwapchainImages;
@@ -2537,8 +2550,8 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
                 for (u32 i = 0; i < ImageCount; i++)
                 {
                     VkImageView Attachments[] = { 
-                        MSAABuffer.ImageView,
-                        DepthBuffer.ImageView,
+                        MSAABufferInfo.ImageView,
+                        DepthBufferInfo.ImageView,
                         SwapchainImageViews[i]
                     };
                     VkFramebufferCreateInfo CreateInfo = {
@@ -2691,19 +2704,6 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
 
     /* allocators */
     {
-        isize BufferPoolSizeBytes[] = {
-            [VKM_MEMORY_TYPE_CPU_VISIBLE] = Config->CpuBufferPoolSizeBytes,
-            [VKM_MEMORY_TYPE_GPU_LOCAL] = Config->GpuBufferPoolSizeBytes,
-        };
-        Vkm_Create(&ResourceGroup->GpuAllocator,
-            Device,
-            Vulkan_GetPhysicalDevice(Vk),
-            Config->ImagePoolSizeBytes,
-            BufferPoolSizeBytes, 
-            Vk->GpuBufferUsageFlags,
-            Vk->GpuMemoryProperties
-        );
-
         int Alignment = 8;
         Arena_Create(&ResourceGroup->CpuArena, Vk->Arena.UserAlloc, Config->CpuBufferPoolSizeBytes, Alignment);
         memory_alloc_interface ArenaInterface = {
@@ -2711,6 +2711,16 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
             .Routine = Vulkan_ResourceGroup_AllocateRoutine,
         };
         FreeList_Create(&ResourceGroup->CpuAllocator, ArenaInterface, Config->CpuBufferPoolSizeBytes/2, Alignment);
+
+        Vkm_Create(
+            &ResourceGroup->GpuAllocator,
+            &ResourceGroup->CpuArena,
+            &(vkm_config) {
+                .Device = Device,
+                .PhysicalDevice = Vulkan_GetPhysicalDevice(Vk),
+                .DeviceMemoryPoolCapacityBytes = Config->GpuBufferPoolSizeBytes,
+            }
+        );
     }
 
     if (Vk->GlobalResourceGroup)
@@ -2732,10 +2742,12 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
         {
             ResourceGroup->UniformBuffers[i] = Vkm_CreateBuffer(
                 &ResourceGroup->GpuAllocator, 
-                VKM_MEMORY_TYPE_CPU_VISIBLE, 
-                Config->UniformBufferSizeBytes
+                &(vkm_buffer_config) {
+                    .BufferType = VKM_BUFFER_TYPE_UBO,
+                    .MemoryCapacityBytes = Config->UniformBufferSizeBytes,
+                }
             );
-            ResourceGroup->UniformBuffersMapped[i] = Vkm_Buffer_GetMappedMemory(
+            ResourceGroup->UniformBuffersMapped[i] = Vkm_MapBufferMemory(
                 &ResourceGroup->GpuAllocator, 
                 ResourceGroup->UniformBuffers[i]
             );
@@ -2964,10 +2976,11 @@ void Renderer_BindResourceGroup(
         Arena_AllocArray(Arena, &UniformBufferDescriptors, Vk->FramesInFlight);
         for (int i = 0; i < Vk->FramesInFlight; i++)
         {
+            vkm_buffer_info BufferInfo = Vkm_GetBufferInfo(&ResourceGroup->GpuAllocator, ResourceGroup->UniformBuffers[i]);
             UniformBufferDescriptors[i] = (VkDescriptorBufferInfo) {
-                .buffer = Vkm_Buffer_GetVkBuffer(&ResourceGroup->GpuAllocator, ResourceGroup->UniformBuffers[i]),
-                .offset = Vkm_Buffer_GetOffsetBytes(ResourceGroup->UniformBuffers[i]),
-                .range = Vkm_Buffer_GetSizeBytes(ResourceGroup->UniformBuffers[i]),
+                .buffer = BufferInfo.Buffer,
+                .offset = BufferInfo.OffsetBytes,
+                .range = BufferInfo.CapacityBytes,
             };
         }
 
@@ -3089,34 +3102,45 @@ renderer_sampler_handle Renderer_CreateSampler(
 internal void Vulkan_TransferDataToGpuLocalMemory(
     renderer *Vk, 
     VkCommandPool CommandPool, 
-    const vk_resource_group *DstOwner, vkm_buffer Dst, 
+    const vk_resource_group *DstOwner, vkm_buffer_handle Dst, 
     const void *Src, isize SrcSizeBytes
 ) {
     /* TODO: use a dedicated transfer queue */
     /* TODO: better way to do staging buffer, having to create an entire allocator just to use a staging buffer is ridiculous */
     vkm Tmp;
     const vk_gpu_context *GpuContext = &Vk->GpuContext;
-    Vkm_Create(&Tmp, GpuContext->Device, GpuContext->PhysicalDevice, 0, (i64[2]){0}, Vk->GpuBufferUsageFlags, Vk->GpuMemoryProperties);
+    Arena_Scope(&Vk->Arena)
     {
-        vkm_buffer StagingBuffer = Vkm_CreateBuffer(&Tmp, VKM_MEMORY_TYPE_CPU_VISIBLE, SrcSizeBytes);
-        void *StagingBufferPtr = Vkm_Buffer_GetMappedMemory(&Tmp, StagingBuffer);
-        memcpy(StagingBufferPtr, Src, SrcSizeBytes);
-
-        VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
+        Vkm_Create(&Tmp, &Vk->Arena, &(vkm_config) {
+            .Device = GpuContext->Device,
+            .PhysicalDevice = GpuContext->PhysicalDevice,
+        }); 
         {
-            vkCmdCopyBuffer(CmdBuf, 
-                Vkm_Buffer_GetVkBuffer(&Tmp, StagingBuffer),
-                Vkm_Buffer_GetVkBuffer(&DstOwner->GpuAllocator, Dst),
-                1, &(VkBufferCopy) {
-                    .dstOffset = Vkm_Buffer_GetOffsetBytes(Dst),
-                    .srcOffset = Vkm_Buffer_GetOffsetBytes(StagingBuffer),
-                    .size = SrcSizeBytes,
-                }
-            );
+            vkm_buffer_handle StagingBuffer = Vkm_CreateBuffer(&Tmp, &(vkm_buffer_config) {
+                .BufferType = VKM_BUFFER_TYPE_STAGING, 
+                .MemoryCapacityBytes = SrcSizeBytes,
+            }); 
+            vkm_buffer_info StagingBufferInfo = Vkm_GetBufferInfo(&Tmp, StagingBuffer);
+            vkm_buffer_info DstBufferInfo = Vkm_GetBufferInfo(&DstOwner->GpuAllocator, Dst);
+            void *StagingBufferPtr = Vkm_MapBufferMemory(&Tmp, StagingBuffer);
+            memcpy(StagingBufferPtr, Src, SrcSizeBytes);
+
+            VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
+            {
+                vkCmdCopyBuffer(CmdBuf, 
+                    StagingBufferInfo.Buffer,
+                    DstBufferInfo.Buffer,
+                    1, &(VkBufferCopy) {
+                        .dstOffset = DstBufferInfo.OffsetBytes,
+                        .srcOffset = StagingBufferInfo.OffsetBytes,
+                        .size = SrcSizeBytes,
+                    }
+                );
+            }
+            Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
         }
-        Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
+        Vkm_Destroy(&Tmp);
     }
-    Vkm_Destroy(&Tmp);
 }
 
 renderer_texture_handle Renderer_CreateStaticTexture(
@@ -3131,47 +3155,59 @@ renderer_texture_handle Renderer_CreateStaticTexture(
     VkDevice Device = Vulkan_GetDevice(Vk);
 
     vkm_image_handle TextureImageHandle;
+    vkm_image_info TextureImageInfo;
+    Arena_Scope(&Vk->Arena)
     {
         vkm Tmp;
-        Vkm_Create(&Tmp, Device, Vulkan_GetPhysicalDevice(Vk), 0, (i64[2]){0}, Vk->GpuBufferUsageFlags, Vk->GpuMemoryProperties);
+        Vkm_Create(&Tmp, &Vk->Arena, &(vkm_config) {
+            .Device = Device,
+            .PhysicalDevice = Vulkan_GetPhysicalDevice(Vk),
+        }); 
 
         vk_gpu_context *GpuContext = &Vk->GpuContext;
         VkCommandPool CommandPool = Vk->CommandPool;
 
         /* copy image data to staging buffer */
         isize ImageSizeBytes = TextureConfig->Width * TextureConfig->Height * sizeof(u32);
-        vkm_buffer StagingBuffer = Vkm_CreateBuffer(&Tmp, VKM_MEMORY_TYPE_CPU_VISIBLE, ImageSizeBytes);
-        memcpy(Vkm_Buffer_GetMappedMemory(&Tmp, StagingBuffer), ImageData, ImageSizeBytes);
+        vkm_buffer_handle StagingBuffer = Vkm_CreateBuffer(&Tmp, &(vkm_buffer_config) {
+            .BufferType = VKM_BUFFER_TYPE_STAGING, 
+            .MemoryCapacityBytes = ImageSizeBytes
+        });
+        vkm_buffer_info StagingBufferInfo = Vkm_GetBufferInfo(&Tmp, StagingBuffer);
+        memcpy(Vkm_MapBufferMemory(&Tmp, StagingBuffer), ImageData, ImageSizeBytes);
 
         TextureImageHandle = Vkm_CreateImage(
             &ResourceGroup->GpuAllocator, 
-            TextureConfig->Width, 
-            TextureConfig->Height, 
-            TextureConfig->MipLevels,
-            VK_SAMPLE_COUNT_1_BIT,
-            ImageFormat,
-            VK_IMAGE_TILING_OPTIMAL,
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT
+            &(vkm_image_config) {
+                .Width = TextureConfig->Width, 
+                .Height = TextureConfig->Height, 
+                .MipLevels = TextureConfig->MipLevels,
+                .Samples = VK_SAMPLE_COUNT_1_BIT,
+                .Format = ImageFormat,
+                .Tiling = VK_IMAGE_TILING_OPTIMAL,
+                .Usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,
+                .Aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+            }
         );
+        TextureImageInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, TextureImageHandle);
 
         /* copy image data to gpu memory */
-        VkImage Image = Vkm_Image_Get(&ResourceGroup->GpuAllocator, TextureImageHandle).Handle;
         Vulkan_TransitionImageLayout(GpuContext, CommandPool,
-            Image, 
+            TextureImageInfo.Image, 
             ImageFormat, 
             VK_IMAGE_LAYOUT_UNDEFINED, 
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
             TextureConfig->MipLevels
         );
         Vulkan_CopyBufferToImage(GpuContext, CommandPool,
-            Vkm_Buffer_GetVkBuffer(&GpuContext->VkMalloc, StagingBuffer),
-            Vkm_Buffer_GetOffsetBytes(StagingBuffer),
-            Image, TextureConfig->Width, TextureConfig->Height, 
+            StagingBufferInfo.Buffer,
+            StagingBufferInfo.OffsetBytes,
+            TextureImageInfo.Image, TextureConfig->Width, TextureConfig->Height, 
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
         );
 #if 1
         Vulkan_TransitionImageLayout(GpuContext, CommandPool,
-            Image, 
+            TextureImageInfo.Image, 
             ImageFormat,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 
@@ -3189,19 +3225,11 @@ renderer_texture_handle Renderer_CreateStaticTexture(
         Vkm_Destroy(&Tmp);
     }
 
-    VkImageView TextureImageView = Vulkan_CreateImageView(Device, 
-        Vkm_Image_Get(&ResourceGroup->GpuAllocator, 
-        TextureImageHandle).Handle, 
-        ImageFormat, 
-        VK_IMAGE_ASPECT_COLOR_BIT, 
-        TextureConfig->MipLevels
-    );
-
     VkSampler Sampler = Vulkan_ResourceGroup_GetSampler(Vk, TextureConfig->SamplerHandle);
 
     u32 Index = Vulkan_ResourceGroup_PushTexture(ResourceGroup, &(vk_texture) {
         .Image = TextureImageHandle,
-        .ImageView = TextureImageView,
+        .ImageView = TextureImageInfo.ImageView,
         .SamplerReference = Sampler,
     });
     renderer_texture_handle Handle = {
@@ -3234,8 +3262,14 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
         .VertexCount = MeshConfig->VertexCount,
         .IndexCount = MeshConfig->IndexCount,
 
-        .VertexBuffer = Vkm_CreateBuffer(&ResourceGroup->GpuAllocator, VKM_MEMORY_TYPE_GPU_LOCAL, VertexBufferSizeBytes),
-        .IndexBuffer = Vkm_CreateBuffer(&ResourceGroup->GpuAllocator, VKM_MEMORY_TYPE_GPU_LOCAL, IndexBufferSizeBytes),
+        .VertexBuffer = Vkm_CreateBuffer(&ResourceGroup->GpuAllocator, &(vkm_buffer_config) {
+            .BufferType = VKM_BUFFER_TYPE_VBO,
+            .MemoryCapacityBytes = VertexBufferSizeBytes,
+        }),
+        .IndexBuffer = Vkm_CreateBuffer(&ResourceGroup->GpuAllocator, &(vkm_buffer_config) {
+            .BufferType = VKM_BUFFER_TYPE_EBO,
+            .MemoryCapacityBytes = IndexBufferSizeBytes,
+        }), 
     };
     Vulkan_TransferDataToGpuLocalMemory(Vk, Vk->CommandPool, ResourceGroup, MeshPtr->VertexBuffer, VertexBufferPtr, VertexBufferSizeBytes);
     Vulkan_TransferDataToGpuLocalMemory(Vk, Vk->CommandPool, ResourceGroup, MeshPtr->IndexBuffer, IndexBufferPtr, IndexBufferSizeBytes);

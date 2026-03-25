@@ -9,46 +9,65 @@
 /* init */
 #ifdef NEW_VKM_API
 
+
+
 typedef struct
 {
     i64 SizeBytes;
     i64 OffsetBytes;
-    u8 BufferIndex;
-} vkm__unpacked_buffer_handle;
+    u8 Index;
+} vkm__unpacked_handle;
 
-force_inline vkm_buffer_handle Vkm__PackBufferHandle(
-    u32 BufferIndex, 
-    i64 BufferSizeBytes,
-    i64 BufferOffsetBytes
+force_inline u64 Vkm__PackHandle(
+    u32 Index, 
+    i64 SizeBytes,
+    i64 OffsetBytes
 ) {
-    ASSERT(BufferIndex <= VKM_MAX_BUFFER_INDEX, "Buffer index too big");
-    ASSERT(BufferSizeBytes < (1ll << 28)*VKM_MIN_BUFFER_ALIGNMENT, "Buffer size too big");
-    ASSERT(BufferOffsetBytes < (1ll << 28)*VKM_MIN_BUFFER_ALIGNMENT, "Buffer offset too big");
-    ASSERT(Memory_AlignSize(BufferSizeBytes, VKM_MIN_BUFFER_ALIGNMENT) == BufferSizeBytes, "Buffer size must be aligned");
-    ASSERT(Memory_AlignSize(BufferOffsetBytes, VKM_MIN_BUFFER_ALIGNMENT) == BufferOffsetBytes, "Buffer offset must be aligned");
+    ASSERT(Index <= VKM_MAX_BUFFER_INDEX, "Index too big");
+    ASSERT(SizeBytes < (1ll << 28)*VKM_MIN_ALIGNMENT, "Size too big");
+    ASSERT(OffsetBytes < (1ll << 28)*VKM_MIN_ALIGNMENT, "Offset too big");
+    ASSERT(Memory_AlignSize(SizeBytes, VKM_MIN_ALIGNMENT) == SizeBytes, "Size must be aligned");
+    ASSERT(Memory_AlignSize(OffsetBytes, VKM_MIN_ALIGNMENT) == OffsetBytes, "Offset must be aligned");
 
-    u64 BufferSizeAligned = BufferSizeBytes / VKM_MIN_BUFFER_ALIGNMENT;
-    u64 BufferOffsetAligned = BufferOffsetBytes / VKM_MIN_BUFFER_ALIGNMENT;
-    vkm_buffer_handle Result = {
-        .Value = 0
-                | ((u64)BufferIndex)
-                | ((u64)BufferOffsetAligned << 8)
-                | ((u64)BufferSizeAligned << 36)
-    };
+    u64 SizeAligned = SizeBytes / VKM_MIN_ALIGNMENT;
+    u64 OffsetAligned = OffsetBytes / VKM_MIN_ALIGNMENT;
+    u64 Result = 0
+        | ((u64)Index)
+        | ((u64)OffsetAligned << 8)
+        | ((u64)SizeAligned << 36)
+    ;
     return Result;
 }
 
-force_inline vkm__unpacked_buffer_handle Vkm__UnpackBufferHandle(
-    vkm_buffer_handle Handle
-) {
-    vkm__unpacked_buffer_handle Unpacked = {
-        .BufferIndex = (Handle.Value) & 0xFF,
-        .OffsetBytes = ((Handle.Value >> 8) & ((1 << 28) - 1)) * VKM_MIN_BUFFER_ALIGNMENT,
-        .SizeBytes = ((Handle.Value >> 36) & ((1 << 28) - 1)) * VKM_MIN_BUFFER_ALIGNMENT,
+force_inline vkm__unpacked_handle Vkm__UnpackHandle(u64 Handle) 
+{
+    vkm__unpacked_handle Unpacked = {
+        .Index = (Handle) & 0xFF,
+        .OffsetBytes = ((Handle >> 8) & ((1 << 28) - 1)) * VKM_MIN_ALIGNMENT,
+        .SizeBytes = ((Handle >> 36) & ((1 << 28) - 1)) * VKM_MIN_ALIGNMENT,
     };
     return Unpacked;
 }
 
+
+force_inline VkMemoryRequirements Vkm__GetImageMemoryRequirements(const vkm *Vkm, VkImage Image, i64 Capacity)
+{
+    VkMemoryRequirements Required;
+    vkGetImageMemoryRequirements(Vkm->Device, Image, &Required);
+    Required.alignment = MAXIMUM(Required.alignment, VKM_MIN_ALIGNMENT);
+    Required.size = MAXIMUM(Capacity, (i64)Required.size);
+    Required.size = Memory_AlignSize(Required.size, Required.alignment);
+    return Required;
+}
+
+force_inline VkMemoryRequirements Vkm__GetBufferMemoryRequirements(const vkm *Vkm, VkBuffer Buffer)
+{
+    VkMemoryRequirements Required;
+    vkGetBufferMemoryRequirements(Vkm->Device, Buffer, &Required);
+    Required.alignment = MAXIMUM(Required.alignment, VKM_MIN_ALIGNMENT);
+    Required.size = Memory_AlignSize(Required.size, Required.alignment);
+    return Required;
+}
 
 
 internal i32 Vkm__FindMemoryType(VkPhysicalDevice PhysDevice, u32 Filter, VkMemoryPropertyFlags Flags)
@@ -87,7 +106,7 @@ internal VkBufferUsageFlags Vkm__GetBufferUsageFlags(vkm_buffer_type BufferType)
 
 internal VkMemoryPropertyFlags Vkm__GetBufferMemoryPropertyFlags(vkm_buffer_type BufferType)
 {
-    VkMemoryPropertyFlagBits Result = 0;
+    VkMemoryPropertyFlags Result = 0;
     switch (BufferType)
     {
     case VKM_BUFFER_TYPE_STAGING:
@@ -122,41 +141,32 @@ internal int Vkm__GetPixelSizeBytes(VkFormat Format)
     }
 }
 
-internal vkm_device_memory *Vkm__CreateDeviceMemory(vkm *Vkm, VkMemoryPropertyFlagBits MemoryProperties, int MemoryTypeIndex, i64 CapacityBytes)
+
+/* NOTE: does not zero data */
+internal vkm_device_memory_node *Vkm__GetDeviceMemoryNode(vkm *Vkm)
 {
-    CapacityBytes = MAXIMUM(Vkm->DeviceMemoryPoolCapacityBytes, CapacityBytes);
-
-    VkDeviceMemory DeviceMemory;
-    VkMemoryAllocateInfo AllocateInfo = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .memoryTypeIndex = MemoryTypeIndex,
-        .allocationSize = CapacityBytes,
-    };
-    VK_CHECK(vkAllocateMemory(Vkm->Device, &AllocateInfo, NULL, &DeviceMemory));
-    VkDynamicArray_Push(&Vkm->FreeList, &Vkm->DeviceMemoryOwned, DeviceMemory);
-
-    vkm_device_memory *Result = Arena_Alloc(Vkm->Arena, sizeof(*Result));
-    *Result = (vkm_device_memory) {
-        .RemainBytes = CapacityBytes,
-        .CapacityBytes = CapacityBytes,
-        .Handle = DeviceMemory,
-        .MemoryProperties = MemoryProperties,
-        .MemoryTypeIndex = MemoryTypeIndex,
-
-        .Next = NULL,
-    };
-    return Result;
+    vkm_device_memory_node *Node = Vkm->DeviceMemoryNodeFree;
+    if (!Node)
+    {
+        return Arena_AllocNonZero(Vkm->Arena, sizeof(vkm_device_memory_node));
+    }
+    else
+    {
+        Vkm->DeviceMemoryNodeFree = Node->Next;
+        return Node;
+    }
 }
 
-force_inline bool32 Vkm__IsNodeSuitable(const vkm_device_memory *Node, i64 SizeBytes, u32 Alignment)
+force_inline bool32 Vkm__IsNodeSuitable(const vkm_device_memory_node *Node, i64 SizeBytes, u32 Alignment)
 {
-    if (Node->RemainBytes < Alignment)
+    i64 NodeRemainBytes = Node->RemainAligned*VKM_MIN_ALIGNMENT;
+    if (NodeRemainBytes < (i64)Alignment)
         return false;
-    i64 Remain = Memory_AlignSize(Node->RemainBytes - Alignment, Alignment);
+    i64 Remain = Memory_AlignSize(NodeRemainBytes - Alignment, Alignment);
     return Remain >= SizeBytes;
 }
 
-internal vkm_device_memory *Vkm__GetDeviceMemory(vkm *Vkm, VkMemoryRequirements Requirements, VkMemoryPropertyFlags MemoryProperties)
+internal vkm_device_memory_node *Vkm__GetDeviceMemory(vkm *Vkm, VkMemoryRequirements Requirements, VkMemoryPropertyFlags MemoryProperties)
 {
     int MemoryTypeIndex = Vkm__FindMemoryType(
         Vkm->PhysicalDevice,
@@ -165,14 +175,40 @@ internal vkm_device_memory *Vkm__GetDeviceMemory(vkm *Vkm, VkMemoryRequirements 
     );
     ASSERT(-1 != MemoryTypeIndex, "Unable to locate suitable memory type");
 
-    vkm_device_memory *Node = Vkm->DeviceMemoryPoolHead[MemoryTypeIndex];
+    vkm_device_memory_node *Node = Vkm->DeviceMemoryPoolHead[MemoryTypeIndex];
     {
         /* NOTE: since the device memory pool is sorted by decreasing order, if the first node is not suitable, none in the pool will */
         if (!Node || !Vkm__IsNodeSuitable(Node, Requirements.size, Requirements.alignment))
         {
-            /* create a new node, insert at the beginning of the list */
-            Node = Vkm__CreateDeviceMemory(Vkm, MemoryProperties, MemoryTypeIndex, Requirements.size);
-            vkm_device_memory *Next = Vkm->DeviceMemoryPoolHead[MemoryTypeIndex];
+            /* create a new node */
+            {
+                i64 CapacityBytes = MAXIMUM(Vkm->DeviceMemoryPoolCapacityBytes, (i64)Requirements.size);
+                ASSERT(CapacityBytes <= ((i64)INT32_MAX) * VKM_MIN_ALIGNMENT, "memory size too big");
+
+                VkDeviceMemory DeviceMemory;
+                VkMemoryAllocateInfo AllocateInfo = {
+                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                    .memoryTypeIndex = MemoryTypeIndex,
+                    .allocationSize = CapacityBytes,
+                };
+                VK_CHECK(vkAllocateMemory(Vkm->Device, &AllocateInfo, NULL, &DeviceMemory));
+                VkDynamicArray_Push(&Vkm->FreeList, &Vkm->DeviceMemory, (vkm_device_memory) {
+                    .MemoryProperties = MemoryProperties,
+                    .MemoryTypeIndex = MemoryTypeIndex,
+                    .CapacityAligned = CapacityBytes / VKM_MIN_ALIGNMENT,
+                    .Handle = DeviceMemory,
+                });
+
+                Node = Vkm__GetDeviceMemoryNode(Vkm);
+                *Node = (vkm_device_memory_node) {
+                    .Next = NULL,
+                    .MemoryTypeIndex = MemoryTypeIndex,
+                    .DeviceMemoryIndex = Vkm->DeviceMemory.Count - 1,
+                    .RemainAligned = CapacityBytes / VKM_MIN_ALIGNMENT,
+                };
+            }
+            /* insert at the beginning of the list */
+            vkm_device_memory_node *Next = Vkm->DeviceMemoryPoolHead[MemoryTypeIndex];
             Node->Next = Next;
             Vkm->DeviceMemoryPoolHead[MemoryTypeIndex] = Node;
         }
@@ -180,17 +216,17 @@ internal vkm_device_memory *Vkm__GetDeviceMemory(vkm *Vkm, VkMemoryRequirements 
     return Node;
 }
 
-internal void Vkm__InsertDeviceMemory(vkm_device_memory **Head, vkm_device_memory *Node)
+internal void Vkm__InsertDeviceMemory(vkm_device_memory_node **Head, vkm_device_memory_node *Node)
 {
     ASSERT(Node == *Head, "Node must be at the beginning of the list");
     /* unlink node from head */
     {
-        vkm_device_memory *Next = Node->Next;
+        vkm_device_memory_node *Next = Node->Next;
         *Head = Next;
     }
-    vkm_device_memory *Prev = NULL;
-    vkm_device_memory *Curr = Node->Next;
-    while (Curr && Node->RemainBytes < Curr->RemainBytes)
+    vkm_device_memory_node *Prev = NULL;
+    vkm_device_memory_node *Curr = Node->Next;
+    while (Curr && Node->RemainAligned < Curr->RemainAligned)
     {
         Prev = Curr;
         Curr = Curr->Next;
@@ -202,12 +238,44 @@ internal void Vkm__InsertDeviceMemory(vkm_device_memory **Head, vkm_device_memor
     Node->Next = Curr;
 }
 
-internal vkm_buffer_pool_entry *Vkm__GetBufferEntry(vkm *Vkm, vkm_buffer_handle BufferHandle)
-{
-    vkm__unpacked_buffer_handle Buffer = Vkm__UnpackBufferHandle(BufferHandle);
-    vkm_buffer_pool_entry *Entry = &Vkm->BufferPool.Data[Buffer.BufferIndex];
-    return Entry;
+internal bool32 Vkm__IsBufferSuitable(
+    const vkm *Vkm,
+    const vkm_buffer_pool_entry *Entry, 
+    VkBufferUsageFlags BufferUsage, 
+    VkMemoryPropertyFlags MemoryProperties, 
+    i64 SizeAligned
+) {
+    const vkm_device_memory *DeviceMemory = &Vkm->DeviceMemory.Data[Entry->DeviceMemoryIndex];
+    bool32 Suitable = 
+        Entry->BufferUsageFlags == BufferUsage
+        && DeviceMemory->MemoryProperties == MemoryProperties
+        && (i64)Entry->DeviceMemoryNode->RemainAligned >= SizeAligned;
+    return Suitable;
 }
+
+force_inline i64 Vkm__GetDeviceMemoryOffsetBytes(const vkm *Vkm, const vkm_device_memory_node *Node)
+{
+    i64 OffsetBytes = (Vkm->DeviceMemory.Data[Node->DeviceMemoryIndex].CapacityAligned - Node->RemainAligned) * VKM_MIN_ALIGNMENT;
+    return OffsetBytes;
+}
+
+force_inline VkDeviceMemory Vkm__GetDeviceMemoryHandle(const vkm *Vkm, const vkm_device_memory_node *Node)
+{
+    return Vkm->DeviceMemory.Data[Node->DeviceMemoryIndex].Handle;
+}
+
+/* returns offset before pushing */
+internal i64 Vkm__DeviceMemoryPush(vkm *Vkm, vkm_device_memory_node *Node, i64 SizeBytes, u32 Alignment)
+{
+    i64 OffsetBytes = Memory_AlignSize(
+        Vkm__GetDeviceMemoryOffsetBytes(Vkm, Node), Alignment
+    );
+    Node->RemainAligned -= SizeBytes/VKM_MIN_ALIGNMENT;
+    ASSERT(Node->RemainAligned >= 0);
+    Vkm__InsertDeviceMemory(&Vkm->DeviceMemoryPoolHead[Node->MemoryTypeIndex], Node);
+    return OffsetBytes;
+}
+
 
 
 
@@ -228,9 +296,9 @@ void Vkm_Create(vkm *Vkm, arena_alloc *Arena, const vkm_config *Config)
 void Vkm_Destroy(vkm *Vkm)
 {
     /* deallocate all memory */
-    dynamic_array_foreach(&Vkm->DeviceMemoryOwned, i)
+    dynamic_array_foreach(&Vkm->DeviceMemory, i)
     {
-        vkFreeMemory(Vkm->Device, *i, NULL);
+        vkFreeMemory(Vkm->Device, i->Handle, NULL);
     }
 
     /* deallocate all buffers */
@@ -247,21 +315,40 @@ void Vkm_Destroy(vkm *Vkm)
     }
 }
 
-internal bool32 Vkm__IsBufferSuitable(
-    const vkm_buffer_pool_entry *Entry, 
-    VkBufferUsageFlags BufferUsage, 
-    VkMemoryPropertyFlags MemoryProperties, 
-    i64 AlignedSizeBytes
-) {
-    bool32 Suitable = 
-        Entry->BufferUsageFlags == BufferUsage
-        && Entry->DeviceMemory->MemoryProperties == MemoryProperties
-        && Entry->DeviceMemory->RemainBytes >= AlignedSizeBytes;
-    return Suitable;
+void Vkm_Reset(vkm *Vkm)
+{
+    /* deallocate all memory */
+    Vkm_Destroy(Vkm);
+
+    Vkm->DeviceMemory.Count = 0;
+    Vkm->BufferPool.Count = 0;
+    Vkm->ImagePool.Count = 0;
+
+    /* unlink all nodes from pool */
+    for (uint k = 0; k < VK_MAX_MEMORY_TYPES; k++)
+    {
+        vkm_device_memory_node *i = Vkm->DeviceMemoryPoolHead[k];
+        for (; i; i = i->Next)
+        {
+            if (!i->Next)
+                break;
+        }
+        vkm_device_memory_node *End = i;
+        if (End)
+        {
+            End->Next = Vkm->DeviceMemoryNodeFree;
+            Vkm->DeviceMemoryNodeFree = Vkm->DeviceMemoryPoolHead[k];
+        }
+        Vkm->DeviceMemoryPoolHead[k] = NULL;
+    }
 }
+
 
 vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, const vkm_buffer_config *Config)
 {
+    ASSERT(Config->BufferType, "BufferType cannot be 0");
+    ASSERT(Config->MemoryCapacityBytes, "MemoryCapacityBytes cannot be 0");
+
     VkBufferUsageFlags BufferUsage = Vkm__GetBufferUsageFlags(Config->BufferType);
     VkMemoryPropertyFlags BufferMemoryProperties = Vkm__GetBufferMemoryPropertyFlags(Config->BufferType);
     vkm_buffer_pool *Pool = &Vkm->BufferPool;
@@ -270,8 +357,8 @@ vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, const vkm_buffer_config *Config)
     for (int i = Pool->Count - 1; i >= 0; i--)
     {
         const vkm_buffer_pool_entry *Entry = &Pool->Data[i];
-        i64 AlignedSize = Memory_AlignSize(Config->MemoryCapacityBytes, Entry->Alignment);
-        if (Vkm__IsBufferSuitable(Entry, BufferUsage, BufferMemoryProperties, AlignedSize))
+        i64 SizeAligned = Memory_AlignSize(Config->MemoryCapacityBytes, Entry->Alignment);
+        if (Vkm__IsBufferSuitable(Vkm, Entry, BufferUsage, BufferMemoryProperties, SizeAligned))
         {
             Index = i;
             break;
@@ -296,24 +383,20 @@ vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, const vkm_buffer_config *Config)
             vkCreateBuffer(Vkm->Device, &CreateInfo, NULL, &Buffer);
         }
 
-        VkMemoryRequirements BufferMemoryRequirements;
-        {
-            vkGetBufferMemoryRequirements(Vkm->Device, Buffer, &BufferMemoryRequirements);
-            BufferMemoryRequirements.alignment = MAXIMUM(BufferMemoryRequirements.alignment, VKM_MIN_BUFFER_ALIGNMENT);
-            BufferMemoryRequirements.size = Memory_AlignSize(BufferMemoryRequirements.size, BufferMemoryRequirements.alignment);
-        }
+        VkMemoryRequirements Required = Vkm__GetBufferMemoryRequirements(Vkm, Buffer);
 
-        vkm_device_memory *DeviceMemory = Vkm__GetDeviceMemory(Vkm, BufferMemoryRequirements, BufferMemoryProperties);
-        i64 AlignedOffset = Memory_AlignSize(DeviceMemory->CapacityBytes - DeviceMemory->RemainBytes, BufferMemoryRequirements.alignment);
-        vkBindBufferMemory(Vkm->Device, Buffer, DeviceMemory->Handle, AlignedOffset);
+        vkm_device_memory_node *Node = Vkm__GetDeviceMemory(Vkm, Required, BufferMemoryProperties);
+        i64 AlignedOffsetBytes = Memory_AlignSize(Vkm__GetDeviceMemoryOffsetBytes(Vkm, Node), Required.alignment);
+        vkBindBufferMemory(Vkm->Device, Buffer, Vkm__GetDeviceMemoryHandle(Vkm, Node), AlignedOffsetBytes);
         /* NOTE: don't adjust DeviceMemory->RemainBytes just yet, do it later */
 
         ASSERT(Pool->Count <= VKM_MAX_BUFFER_INDEX, "Too many buffers, try increasing pool size?");
         VkDynamicArray_Push(&Vkm->FreeList, Pool, (vkm_buffer_pool_entry) {
             .Buffer = Buffer,
-            .DeviceMemory = DeviceMemory,
             .BufferUsageFlags = BufferUsage,
-            .Alignment = BufferMemoryRequirements.alignment,
+            .Alignment = Required.alignment,
+            .DeviceMemoryIndex = Node->DeviceMemoryIndex,
+            .DeviceMemoryNode = Node,
         });
         Index = Pool->Count - 1;
     }
@@ -321,15 +404,13 @@ vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, const vkm_buffer_config *Config)
     ASSERT(IN_RANGE(0, Index, Pool->Count - 1));
 
     vkm_buffer_pool_entry *Entry = &Pool->Data[Index];
-    vkm_device_memory *DeviceMemory = Entry->DeviceMemory;
+    vkm_device_memory_node *Node = Entry->DeviceMemoryNode;
 
-    i64 AlignedSizeBytes = Memory_AlignSize(Config->MemoryCapacityBytes, Entry->Alignment);
-    i64 AlignedOffsetBytes = Memory_AlignSize(DeviceMemory->CapacityBytes - DeviceMemory->RemainBytes, Entry->Alignment);
-    vkm_buffer_handle Handle = Vkm__PackBufferHandle(Index, AlignedSizeBytes, AlignedOffsetBytes);
-
-    DeviceMemory->RemainBytes = DeviceMemory->CapacityBytes - (AlignedOffsetBytes + AlignedSizeBytes);
-    ASSERT(DeviceMemory->RemainBytes >= 0);
-    Vkm__InsertDeviceMemory(&Vkm->DeviceMemoryPoolHead[DeviceMemory->MemoryTypeIndex], DeviceMemory);
+    i64 SizeBytes = Memory_AlignSize(Config->MemoryCapacityBytes, Entry->Alignment);
+    i64 OffsetBytes = Vkm__DeviceMemoryPush(Vkm, Node, SizeBytes, Entry->Alignment);
+    vkm_buffer_handle Handle = { 
+        .Value = Vkm__PackHandle(Index, SizeBytes, OffsetBytes)
+    };
     return Handle;
 }
 
@@ -392,68 +473,64 @@ internal VkImageView Vkm__CreateImageView(vkm *Vkm, VkImage Image, VkFormat Form
 
 vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config)
 {
+    int PixelSizeBytes = Vkm__GetPixelSizeBytes(Config->Format);
+    int MipLevels = Config->MipLevels == 0? 1 : Config->MipLevels;
+    i32 CapacityBytes = Config->MemoryCapacityPixels == 0
+        ? (i32)Config->Width * Config->Height
+        : Config->MemoryCapacityPixels;
+    CapacityBytes *= PixelSizeBytes;
+    ASSERT(Config->Width, "Width cannot be 0");
+    ASSERT(Config->Height, "Height cannot be 0");
+    ASSERT(Config->Samples, "Samples cannot be 0");
+    ASSERT(Config->Format, "Format cannot be 0 (VK_FORMAT_UNDEFINED)");
+    ASSERT(Config->Usage, "Usage cannot be 0");
+    ASSERT(Config->Aspect, "Aspect cannot be 0 (VK_ASPECT_NONE)");
+
     VkImage Image = Vkm__CreateVkImage(Vkm, 
         Config->Tiling, Config->Usage, Config->Samples, Config->Format, 
-        Config->Width, Config->Height, Config->MipLevels
+        Config->Width, Config->Height, MipLevels
     );
     VkImageView ImageView = Vkm__CreateImageView(Vkm, 
-        Image, Config->Format, Config->Aspect, Config->MipLevels
+        Image, Config->Format, Config->Aspect, MipLevels
     );
 
-    int PixelSizeBytes = Vkm__GetPixelSizeBytes(Config->Format);
-    VkMemoryRequirements MemoryRequirements;
-    {
-        i32 CapacityBytes = Config->MemoryCapacityPixels == 0
-            ? (i32)Config->Width * Config->Height
-            : Config->MemoryCapacityPixels;
-        vkGetImageMemoryRequirements(Vkm->Device, Image, &MemoryRequirements);
-        MemoryRequirements.size = MAXIMUM((i64)CapacityBytes, (i64)MemoryRequirements.size);
-        MemoryRequirements.size = Memory_AlignSize(MemoryRequirements.size, MemoryRequirements.alignment);
-    }
-
-    vkm_device_memory *DeviceMemory = Vkm__GetDeviceMemory(Vkm, MemoryRequirements, VKM_IMAGE_MEMORY_PROPERTY);
-    i64 AlignedOffset = Memory_AlignSize(
-        DeviceMemory->CapacityBytes - DeviceMemory->RemainBytes, 
-        MemoryRequirements.alignment
-    );
-    /* bind device memory and reinsert it */
-    {
-        vkBindImageMemory(Vkm->Device, Image, DeviceMemory->Handle, AlignedOffset);
-        DeviceMemory->RemainBytes = DeviceMemory->CapacityBytes - (AlignedOffset + MemoryRequirements.size);
-        ASSERT(DeviceMemory->RemainBytes >= 0);
-        Vkm__InsertDeviceMemory(&Vkm->DeviceMemoryPoolHead[DeviceMemory->MemoryTypeIndex], DeviceMemory);
-    }
+    VkMemoryRequirements Required = Vkm__GetImageMemoryRequirements(Vkm, Image, CapacityBytes);
+    vkm_device_memory_node *Node = Vkm__GetDeviceMemory(Vkm, Required, VKM_IMAGE_MEMORY_PROPERTY);
+    i64 OffsetBytes = Vkm__DeviceMemoryPush(Vkm, Node, Required.size, Required.alignment);
+    vkBindImageMemory(Vkm->Device, Image, Vkm__GetDeviceMemoryHandle(Vkm, Node), OffsetBytes);
 
     VkDynamicArray_Push(&Vkm->FreeList, &Vkm->ImagePool, (vkm_image_pool_entry) {
         .Image = Image,
         .ImageView = ImageView, 
-        .DeviceMemory = DeviceMemory->Handle,
-        .OffsetBytes = AlignedOffset,
-        .CapacityBytes = MemoryRequirements.size,
-        .Alignment = MemoryRequirements.alignment,
-        .MemoryTypeIndex = DeviceMemory->MemoryTypeIndex,
+        .Alignment = Required.alignment,
+
         .Usage = Config->Usage,
         .Format = Config->Format,
         .Samples = Config->Samples,
         .Tiling = Config->Tiling,
         .Aspect = Config->Aspect,
-        .PixelSizeBytes = PixelSizeBytes,
+
+        .DeviceMemoryIndex = Node->DeviceMemoryIndex,
         .Width = Config->Width,
         .Height = Config->Height,
-        .MipLevels = Config->MipLevels,
+        .PixelSizeBytes = PixelSizeBytes,
+        .MipLevels = MipLevels,
     });
     vkm_image_handle Handle = {
-        .Value = Vkm->ImagePool.Count - 1,
+        .Value = Vkm__PackHandle(Vkm->ImagePool.Count - 1, CapacityBytes, OffsetBytes),
     };
     return Handle;
 }
 
 
 
-void Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 NewWidth, u16 NewHeight)
+vkm_image_handle Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 NewWidth, u16 NewHeight)
 {
-    ASSERT(ImageHandle.Value < Vkm->ImagePool.Count, "Invalid handle");
-    vkm_image_pool_entry *Entry = &Vkm->ImagePool.Data[ImageHandle.Value];
+    vkm__unpacked_handle Unpacked = Vkm__UnpackHandle(ImageHandle.Value);
+    ASSERT(Unpacked.Index < Vkm->ImagePool.Count, "Invalid handle");
+
+    vkm_image_pool_entry *Entry = &Vkm->ImagePool.Data[Unpacked.Index];
+    vkm_device_memory *DeviceMemory = &Vkm->DeviceMemory.Data[Entry->DeviceMemoryIndex];
     VkImage OldImage = Entry->Image;
     VkImageView OldImageView = Entry->ImageView;
 
@@ -465,51 +542,35 @@ void Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 NewWidth, u16 N
         NewImage, Entry->Format, Entry->Aspect, Entry->MipLevels
     );
 
-    bool32 CanReuseDeviceMemory;
-    VkMemoryRequirements Requirements;
-    {
-        vkGetImageMemoryRequirements(Vkm->Device, NewImage, &Requirements);
-        CanReuseDeviceMemory = 
-            (i64)Requirements.size <= Entry->CapacityBytes
-            && Requirements.alignment <= Entry->Alignment;
-    }
+    VkMemoryRequirements Required = Vkm__GetImageMemoryRequirements(Vkm, NewImage, 0);
+    bool32 CanReuseDeviceMemory = 
+        (i64)Required.size <= Unpacked.SizeBytes
+        && Required.alignment <= Entry->Alignment;
     if (CanReuseDeviceMemory)
     {
-        VK_CHECK(vkBindImageMemory(Vkm->Device, NewImage, Entry->DeviceMemory, Entry->OffsetBytes));
+        vkBindImageMemory(Vkm->Device, NewImage, DeviceMemory->Handle, Unpacked.OffsetBytes);
     }
     else
     {
         /* create new device memory */
-        vkm_device_memory *NewDeviceMemory = Vkm__GetDeviceMemory(Vkm, Requirements, VKM_IMAGE_MEMORY_PROPERTY);
-        i64 AlignedOffset = Memory_AlignSize(
-            NewDeviceMemory->CapacityBytes - NewDeviceMemory->RemainBytes, 
-            Requirements.alignment
-        );
-        {
-            vkBindImageMemory(Vkm->Device, NewImage, NewDeviceMemory->Handle, AlignedOffset);
-            NewDeviceMemory->RemainBytes = NewDeviceMemory->CapacityBytes - (AlignedOffset + Requirements.size);
-            ASSERT(NewDeviceMemory->RemainBytes >= 0);
-            Vkm__InsertDeviceMemory(&Vkm->DeviceMemoryPoolHead[NewDeviceMemory->MemoryTypeIndex], NewDeviceMemory);
-        }
+        vkm_device_memory_node *NewNode = Vkm__GetDeviceMemory(Vkm, Required, VKM_IMAGE_MEMORY_PROPERTY);
+        i64 OffsetBytes = Vkm__DeviceMemoryPush(Vkm, NewNode, Required.size, Required.alignment);
+        vkBindImageMemory(Vkm->Device, NewImage, Vkm__GetDeviceMemoryHandle(Vkm, NewNode), OffsetBytes);
 
         /* insert current device memory into the list */
         {
-            vkm_device_memory *OldDeviceMemory = Arena_Alloc(Vkm->Arena, sizeof *OldDeviceMemory);
-            *OldDeviceMemory = (vkm_device_memory) {
-                .MemoryProperties = VKM_IMAGE_MEMORY_PROPERTY, 
-                .MemoryTypeIndex = Entry->MemoryTypeIndex, 
-                .CapacityBytes = Entry->CapacityBytes,
-                .RemainBytes = Entry->CapacityBytes,
-                .Handle = Entry->DeviceMemory,
+            vkm_device_memory_node *OldNode = Vkm__GetDeviceMemoryNode(Vkm);
+            *OldNode = (vkm_device_memory_node) {
                 .Next = NULL,
+                .DeviceMemoryIndex = Entry->DeviceMemoryIndex,
+                .MemoryTypeIndex = Vkm->DeviceMemory.Data[Entry->DeviceMemoryIndex].MemoryTypeIndex,
+                .RemainAligned = Unpacked.SizeBytes/VKM_MIN_ALIGNMENT,
             };
-            Vkm__InsertDeviceMemory(&Vkm->DeviceMemoryPoolHead[OldDeviceMemory->MemoryTypeIndex], OldDeviceMemory);
+            Vkm__InsertDeviceMemory(&Vkm->DeviceMemoryPoolHead[OldNode->MemoryTypeIndex], OldNode);
         }
-        Entry->DeviceMemory = NewDeviceMemory->Handle;
-        Entry->MemoryTypeIndex = NewDeviceMemory->MemoryTypeIndex;
-        Entry->CapacityBytes = NewDeviceMemory->CapacityBytes;
-        Entry->Alignment = Requirements.alignment;
-        Entry->OffsetBytes = AlignedOffset;
+
+        Entry->DeviceMemoryIndex = NewNode->DeviceMemoryIndex;
+        ImageHandle.Value = Vkm__PackHandle(Unpacked.Index, Required.size, OffsetBytes);
     }
 
     Entry->Width = NewWidth;
@@ -518,6 +579,7 @@ void Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 NewWidth, u16 N
     Entry->ImageView = NewImageView;
     vkDestroyImage(Vkm->Device, OldImage, NULL);
     vkDestroyImageView(Vkm->Device, OldImageView, NULL);
+    return ImageHandle;
 }
 
 void *Vkm_MapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle)
@@ -536,28 +598,55 @@ void Vkm_UnmapBufferMemory(vkm *Vkm, void *MappedMemory)
 
 
 
-vkm_buffer_info Vkm_GetBufferInfo(vkm *Vkm, vkm_buffer_handle BufferHandle)
+vkm_buffer_info Vkm_GetBufferInfo(const vkm *Vkm, vkm_buffer_handle BufferHandle)
 {
-    vkm__unpacked_buffer_handle Buffer = Vkm__UnpackBufferHandle(BufferHandle);
-    vkm_buffer_pool_entry *Entry = Vkm__GetBufferEntry(Vkm, BufferHandle);
-    vkm_device_memory *DeviceMemory = Entry->DeviceMemory;
+    vkm__unpacked_handle Unpacked = Vkm__UnpackHandle(BufferHandle.Value);
+    ASSERT(IN_RANGE(0, Unpacked.Index, Vkm->BufferPool.Count - 1), "Invalid buffer handle");
+
+    const vkm_buffer_pool_entry *Entry = &Vkm->BufferPool.Data[Unpacked.Index];
+    const vkm_device_memory *DeviceMemory = &Vkm->DeviceMemory.Data[Entry->DeviceMemoryIndex];
+
     vkm_buffer_info BufferInfo = {
         .Buffer = Entry->Buffer,
-        .DeviceMemory = DeviceMemory->Handle,
+        .DeviceMemory = DeviceMemory->Handle, 
         .BufferUsage = Entry->BufferUsageFlags,
         .MemoryProperties = DeviceMemory->MemoryProperties,
         .MemoryTypeIndex = DeviceMemory->MemoryTypeIndex,
-        .OffsetBytes = Buffer.OffsetBytes,
-        .CapacityBytes = Buffer.SizeBytes,
+        .OffsetBytes = Unpacked.OffsetBytes,
+        .CapacityBytes = Unpacked.SizeBytes,
     };
     return BufferInfo;
 }
 
-vkm_image_info Vkm_GetImageInfo(vkm *Vkm, vkm_image_handle ImageHandle)
+vkm_image_info Vkm_GetImageInfo(const vkm *Vkm, vkm_image_handle ImageHandle)
 {
-    ASSERT(ImageHandle.Value < Vkm->ImagePool.Count, "Invalid handle");
-    vkm_image_pool_entry *Entry = &Vkm->ImagePool.Data[ImageHandle.Value];
-    return *Entry;
+    vkm__unpacked_handle Unpacked = Vkm__UnpackHandle(ImageHandle.Value);
+    ASSERT(IN_RANGE(0, Unpacked.Index, Vkm->ImagePool.Count - 1), "Invalid image handle");
+
+    const vkm_image_pool_entry *Entry = &Vkm->ImagePool.Data[Unpacked.Index];
+    const vkm_device_memory *DeviceMemory = &Vkm->DeviceMemory.Data[Entry->DeviceMemoryIndex];
+
+    vkm_image_info ImageInfo = {
+        .Image = Entry->Image,
+        .ImageView = Entry->ImageView,
+
+        .DeviceMemory = DeviceMemory->Handle,
+        .OffsetBytes = Unpacked.OffsetBytes,
+        .CapacityBytes = Unpacked.SizeBytes,
+        .MemoryTypeIndex = DeviceMemory->MemoryTypeIndex,
+
+        .Usage = Entry->Usage,
+        .Format = Entry->Format,
+        .Samples = Entry->Samples,
+        .Tiling = Entry->Tiling,
+        .Aspect = Entry->Aspect,
+
+        .PixelSizeBytes = Entry->PixelSizeBytes,
+        .Width = Entry->Width,
+        .Height = Entry->Height,
+        .MipLevels = Entry->MipLevels,
+    };
+    return ImageInfo;
 }
 
 

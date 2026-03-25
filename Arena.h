@@ -229,7 +229,6 @@ force_inline bool32 Arena_TryPopContext(arena_alloc *Arena, arena_context *Conte
 
 
 
-#define ARENA_IMPLEMENTATION
 #if defined(ARENA_IMPLEMENTATION) && !defined(ARENA_ALREADY_IMPLEMENTED)
 #define ARENA_ALREADY_IMPLEMENTED
 

@@ -11,9 +11,9 @@
 #include "Arena.h"
 #include "FreeList.h"
 
-#ifndef VKM_MIN_BUFFER_ALIGNMENT
-#  define VKM_MIN_BUFFER_ALIGNMENT 64
-#endif /* VKM_MIN_BUFFER_ALIGNMENT */
+#ifndef VKM_MIN_ALIGNMENT
+#  define VKM_MIN_ALIGNMENT 64
+#endif /* VKM_MIN_ALIGNMENT */
 
 #define VKM_MAX_BUFFER_INDEX 255
 #define VKM_IMAGE_MEMORY_PROPERTY VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
@@ -25,79 +25,80 @@ typedef_struct(vkm_image_pool_entry);
 typedef_struct(vkm_buffer_config);
 typedef_struct(vkm_buffer_pool_entry);
 typedef_struct(vkm_buffer_info);
+typedef_struct(vkm_device_memory_node);
 typedef_struct(vkm_device_memory);
 
-/* index into image pool */
-typedef handle(u32) vkm_image_handle;
+
+/*
+ * Value[7:0]   -> u8 IndexIntoImagePool
+ * Value[35:8]  -> u28 MemoryOffsetAligned  // offset in bytes / VKM_MIN_BUFFER_ALIGNMENT
+ * Value[63:36] -> u28 MemorySizeAligned    // size in bytes / VKM_MIN_BUFFER_ALIGNMENT
+ */
+typedef handle(u64) vkm_image_handle;
 
 /*
  * Value[7:0]   -> u8 IndexIntoBufferPool
- * Value[35:8]  -> u28 BufferOffsetAligned  // offset in bytes / VKM_MIN_BUFFER_ALIGNMENT
- * Value[63:36] -> u28 BufferSizeAligned    // size in bytes / VKM_MIN_BUFFER_ALIGNMENT
+ * Value[35:8]  -> u28 MemoryOffsetAligned  // offset in bytes / VKM_MIN_BUFFER_ALIGNMENT
+ * Value[63:36] -> u28 MemorySizeAligned    // size in bytes / VKM_MIN_BUFFER_ALIGNMENT
  */
 typedef handle(u64) vkm_buffer_handle;
 
 typedef dynamic_array(vkm_buffer_pool_entry) vkm_buffer_pool;
 typedef dynamic_array(vkm_image_pool_entry) vkm_image_pool;
-typedef struct vkm_image_pool_entry vkm_image_info;
+typedef_struct(vkm_image_info);
+typedef_struct(vkm_image_pool_entry);
 
 
 typedef enum 
 {
-    VKM_BUFFER_TYPE_STAGING = 0,
-    VKM_BUFFER_TYPE_UBO = 1,
-    VKM_BUFFER_TYPE_VBO = 2,
-    VKM_BUFFER_TYPE_EBO = 3,
-    VKM_BUFFER_TYPE_SSBO = 4,
-#define VKM_BUFFER_TYPE_COUNT 5
+    VKM_BUFFER_TYPE_STAGING = 1,
+    VKM_BUFFER_TYPE_UBO = 2,
+    VKM_BUFFER_TYPE_VBO = 3,
+    VKM_BUFFER_TYPE_EBO = 4,
+    VKM_BUFFER_TYPE_SSBO = 5,
+#define VKM_BUFFER_TYPE_COUNT 6
 } vkm_buffer_type;
 
 struct vkm_device_memory
 {
-    vkm_device_memory *Next;
     VkDeviceMemory Handle;
-    i64 RemainBytes;
-    i64 CapacityBytes;
     VkMemoryPropertyFlags MemoryProperties;
-    int MemoryTypeIndex;
+    i32 CapacityAligned;
+    i8 MemoryTypeIndex;
 };
-struct vkm_buffer_info 
+struct vkm_device_memory_node
 {
-    VkBuffer Buffer;
-    VkDeviceMemory DeviceMemory;
-    VkBufferUsageFlags BufferUsage;
-    VkMemoryPropertyFlags MemoryProperties;
-    int MemoryTypeIndex;
-    i64 OffsetBytes;
-    i64 CapacityBytes;
+    vkm_device_memory_node *Next;
+    i32 RemainAligned;
+    i16 DeviceMemoryIndex;
+    i8 MemoryTypeIndex;
 };
 struct vkm_buffer_pool_entry
 {
     VkBuffer Buffer;
-    vkm_device_memory *DeviceMemory;
+    vkm_device_memory_node *DeviceMemoryNode;
     VkBufferUsageFlags BufferUsageFlags;
     u32 Alignment;
+    i16 DeviceMemoryIndex;
 };
 struct vkm_image_pool_entry
 {
     VkImage Image;
     VkImageView ImageView;
-    VkDeviceMemory DeviceMemory;
-    i64 OffsetBytes;
-    i64 CapacityBytes;
     u32 Alignment;
-    int MemoryTypeIndex;
+
     VkImageUsageFlags Usage;
     VkFormat Format;
     VkSampleCountFlagBits Samples;
     VkImageTiling Tiling;
     VkImageAspectFlags Aspect;
-    u16 PixelSizeBytes;
+
+    i16 DeviceMemoryIndex;
     u16 Width;
     u16 Height;
-    u16 MipLevels;
+    u8 PixelSizeBytes;
+    u8 MipLevels;
 };
-
 struct vkm_config
 {
     VkDevice Device;
@@ -112,19 +113,55 @@ struct vkm
     VkPhysicalDevice PhysicalDevice;
     i64 DeviceMemoryPoolCapacityBytes;
 
-    dynamic_array(VkDeviceMemory) DeviceMemoryOwned;
+    dynamic_array(vkm_device_memory) DeviceMemory;
 
-    vkm_device_memory *DeviceMemoryPoolHead[VK_MAX_MEMORY_TYPES];
+    vkm_device_memory_node *DeviceMemoryNodeFree;
+    vkm_device_memory_node *DeviceMemoryPoolHead[VK_MAX_MEMORY_TYPES];
     vkm_buffer_pool BufferPool;     /* owns VkBuffer */
     vkm_image_pool ImagePool;       /* owns VkImage, VkImageView */
 };
 
-struct vkm_image_config
+
+struct vkm_image_info
 {
-    i64 MemoryCapacityPixels; /* 0 implies that MemoryCapacityPixels = Width*Height */
+    VkImage Image;
+    VkImageView ImageView;
+
+    VkDeviceMemory DeviceMemory;
+    i64 OffsetBytes;
+    i64 CapacityBytes;
+    u32 Alignment;
+    i32 MemoryTypeIndex;
+
+    VkImageUsageFlags Usage;
+    VkFormat Format;
+    VkSampleCountFlagBits Samples;
+    VkImageTiling Tiling;
+    VkImageAspectFlags Aspect;
+
+    u16 PixelSizeBytes;
     u16 Width;
     u16 Height;
     u16 MipLevels;
+};
+struct vkm_buffer_info 
+{
+    VkBuffer Buffer;
+    VkDeviceMemory DeviceMemory;
+    VkBufferUsageFlags BufferUsage;
+    VkMemoryPropertyFlags MemoryProperties;
+    int MemoryTypeIndex;
+    i64 OffsetBytes;
+    i64 CapacityBytes;
+};
+
+
+struct vkm_image_config
+{
+    i64 MemoryCapacityPixels;       /* 0 implies that MemoryCapacityPixels = Width*Height */
+    u16 Width;
+    u16 Height;
+    u16 MipLevels;                  /* 0 implies default mip level (1) */
     VkSampleCountFlags Samples;
     VkFormat Format;
     VkImageUsageFlags Usage;
@@ -140,17 +177,19 @@ struct vkm_buffer_config
 
 void Vkm_Create(vkm *Vkm, arena_alloc *Arena, const vkm_config *Config);
 void Vkm_Destroy(vkm *Vkm);
+void Vkm_Reset(vkm *Vkm);
+
 vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, const vkm_buffer_config *Config);
 vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config);
 
-void Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 NewWidth, u16 NewHeight);
+vkm_image_handle Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 NewWidth, u16 NewHeight);
 
 /* map will only succeed if the buffer is VKM_BUFFER_TYPE_STAGING or VKM_BUFFER_TYPE_UBO */
 void *Vkm_MapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle);
 void Vkm_UnmapBufferMemory(vkm *Vkm, void *MappedMemory);
 
-vkm_buffer_info Vkm_GetBufferInfo(vkm *Vkm, vkm_buffer_handle BufferHandle);
-vkm_image_info Vkm_GetImageInfo(vkm *Vkm, vkm_image_handle ImageHandle);
+vkm_buffer_info Vkm_GetBufferInfo(const vkm *Vkm, vkm_buffer_handle BufferHandle);
+vkm_image_info Vkm_GetImageInfo(const vkm *Vkm, vkm_image_handle ImageHandle);
 
 #else
 
