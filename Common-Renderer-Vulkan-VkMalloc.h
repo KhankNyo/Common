@@ -72,6 +72,7 @@ struct vkm_device_memory_node
 {
     vkm_device_memory_node *Next;
     i32 RemainAligned;
+    i32 OffsetAligned;
     i16 DeviceMemoryIndex;
     i8 MemoryTypeIndex;
 };
@@ -185,6 +186,7 @@ vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, const vkm_buffer_config *Config);
 vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config);
 
 vkm_image_handle Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 NewWidth, u16 NewHeight);
+vkm_buffer_handle Vkm_ResizeBuffer(vkm *Vkm, vkm_buffer_handle BufferHandle, i64 NewSizeBytes);
 
 /* map will only succeed if the buffer is VKM_BUFFER_TYPE_STAGING or VKM_BUFFER_TYPE_UBO */
 void *Vkm_MapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle);
