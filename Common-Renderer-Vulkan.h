@@ -17,13 +17,13 @@
 /* TODO: move this somewhere else */
 #define VkDynamicArray_ResizeCapacity(p_freelist, p_da, isize_new_capacity) do {\
     (p_da)->Capacity = isize_new_capacity;\
-    FreeList_ReallocArray(freelist_, &(p_da)->Data, (p_da)->Capacity);\
+    FreeList_ReallocArray(p_freelist, &(p_da)->Data, (p_da)->Capacity);\
 } while (0)
 #define VkDynamicArray_Push(p_freelist, p_da, ...) do {\
     typeof(p_freelist) freelist_ = p_freelist;\
     typeof(p_da) dynamic_array_ = p_da;\
     if (dynamic_array_->Count >= dynamic_array_->Capacity) {\
-        VkDynamicArray_ResizeCapacity(freelist_, dynamic_array_, dynamic_array_->Capacity == 0? 8 : dynamic_array_->Capacity * 2);\
+        VkDynamicArray_ResizeCapacity(freelist_, dynamic_array_, dynamic_array_->Capacity == 0? 32 : dynamic_array_->Capacity * 2);\
     }\
     dynamic_array_->Data[dynamic_array_->Count] = __VA_ARGS__;\
     dynamic_array_->Count++;\
@@ -90,8 +90,8 @@ typedef_struct(vk_resource_group);
 
 struct vk_mesh
 {
-    vkm_buffer VertexBuffer;
-    vkm_buffer IndexBuffer;
+    vkm_buffer_handle VertexBuffer;
+    vkm_buffer_handle IndexBuffer;
     isize VertexBufferSizeBytes, IndexBufferSizeBytes;
     isize VertexCount;
     isize IndexCount;
@@ -147,7 +147,7 @@ struct vk_resource_group
     u32 TextureArrayBinding;
 
     /* NOTE: there are Vk->FramesInFlight amount of uniform buffers */
-    vkm_buffer *UniformBuffers;
+    vkm_buffer_handle *UniformBuffers;
     void **UniformBuffersMapped;
     u8 *UniformBufferTmp;
     i32 UniformBufferTmpCapacity;
@@ -185,7 +185,7 @@ struct renderer
         VkQueue PresentQueue;
 
         vkm VkMalloc;
-        vkm_buffer StagingBuffer;
+        vkm_buffer_handle StagingBuffer;
         void *StagingBufferPtr;
 
         profiler *Profiler;
@@ -243,10 +243,6 @@ struct renderer
     bool8 ForceTripleBuffering;
 
 
-    VkBufferUsageFlags GpuBufferUsageFlags[VKM_MEMORY_TYPE_COUNT];
-    VkMemoryPropertyFlags GpuMemoryProperties[VKM_MEMORY_TYPE_COUNT];
-
-
 #ifdef NEW_API
     vk_resource_group *ResourceGroupHead, 
                       *ResourceGroupFreeSlots, 
@@ -264,8 +260,8 @@ struct renderer
         VkSemaphore *OnRenderControlFinish;
 
         VkRenderPass RenderPass;
-        vkm_image_and_view DepthResource;
-        vkm_image_and_view ColorResource;
+        vkm_image_handle DepthResource;
+        vkm_image_handle ColorResource;
     } RenderTarget;
 
     /* NOTE: vk_render_control */

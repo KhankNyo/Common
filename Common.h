@@ -149,8 +149,8 @@ extern "C" {
 #define TO_UPPER(ascii_char) ((ascii_char) & ~(1u << 5))
 
 /* TODO: remove this, Platform-Core.h and Renderer-Vulkan.h are depending on it, but its usage can be replaced by slice */
-#define dynamic_array(type_name) struct {\
-    type_name *Data;\
+#define dynamic_array(...) struct {\
+    __VA_ARGS__ *Data;\
     isize Count, Capacity;\
 }
 #define Arena_AllocDynamicArray(p_arena, p_dynamic_array, isize_new_count, isize_new_capacity) do {\
