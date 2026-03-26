@@ -27,6 +27,12 @@ typedef_struct(vkm_buffer_pool_entry);
 typedef_struct(vkm_buffer_info);
 typedef_struct(vkm_device_memory_node);
 typedef_struct(vkm_device_memory);
+typedef_struct(vkm_image_info);
+typedef_struct(vkm_image_pool_entry);
+typedef_struct(vkm_buffer_chunk);
+typedef dynamic_array(vkm_buffer_pool_entry) vkm_buffer_pool;
+typedef dynamic_array(vkm_image_pool_entry) vkm_image_pool;
+
 
 
 /*
@@ -41,13 +47,7 @@ typedef handle(u64) vkm_image_handle;
  * Value[35:8]  -> u28 MemoryOffsetAligned  // offset in bytes / VKM_MIN_BUFFER_ALIGNMENT
  * Value[63:36] -> u28 MemorySizeAligned    // size in bytes / VKM_MIN_BUFFER_ALIGNMENT
  */
-typedef handle(u64) vkm_buffer_handle;
-
-typedef dynamic_array(vkm_buffer_pool_entry) vkm_buffer_pool;
-typedef dynamic_array(vkm_image_pool_entry) vkm_image_pool;
-typedef_struct(vkm_image_info);
-typedef_struct(vkm_image_pool_entry);
-
+typedef handle(vkm_buffer_chunk *) vkm_buffer_handle;
 
 typedef enum 
 {
@@ -56,7 +56,7 @@ typedef enum
     VKM_BUFFER_TYPE_VBO = 3,
     VKM_BUFFER_TYPE_EBO = 4,
     VKM_BUFFER_TYPE_SSBO = 5,
-#define VKM_BUFFER_TYPE_COUNT 6
+#define VKM_BUFFER_TYPE_COUNT 5
 } vkm_buffer_type;
 
 struct vkm_device_memory
@@ -71,23 +71,34 @@ struct vkm_device_memory
 struct vkm_device_memory_node
 {
     vkm_device_memory_node *Next;
-    i32 RemainAligned;
+    i32 SizeAligned;
     i32 OffsetAligned;
     i16 DeviceMemoryIndex;
     i8 MemoryTypeIndex;
+};
+struct vkm_buffer_chunk
+{
+    vkm_buffer_chunk *Next, *Prev;
+    i32 SizeAligned;
+    i32 OffsetAligned;
+    i32 EntryIndex;
 };
 struct vkm_buffer_pool_entry
 {
     VkBuffer Buffer;
     vkm_device_memory_node *DeviceMemoryNode;
-    VkBufferUsageFlags BufferUsageFlags;
+    vkm_buffer_chunk *Allocated;
+    vkm_buffer_chunk *Freed;
+    vkm_buffer_chunk *LargestFree;
     u32 Alignment;
+    VkBufferUsageFlags BufferUsageFlags;
     i16 DeviceMemoryIndex;
 };
 struct vkm_image_pool_entry
 {
     VkImage Image;
     VkImageView ImageView;
+    vkm_device_memory_node *DeviceMemoryNode;
     u32 Alignment;
 
     VkImageUsageFlags Usage;
@@ -119,8 +130,10 @@ struct vkm
     dynamic_array(vkm_device_memory) DeviceMemory;
     dynamic_array(VkImageView) SeparateImageViews;
 
-    vkm_device_memory_node *DeviceMemoryNodeFree;
-    vkm_device_memory_node *DeviceMemoryPoolHead[VK_MAX_MEMORY_TYPES];
+    vkm_device_memory_node *DeviceMemoryNodeUnused;
+    vkm_buffer_chunk *BufferChunkUnused;
+    vkm_device_memory_node *DeviceMemoryNodeAllocated[VK_MAX_MEMORY_TYPES];
+    vkm_device_memory_node *DeviceMemoryNodeFree[VK_MAX_MEMORY_TYPES];
     vkm_buffer_pool BufferPool;     /* owns VkBuffer */
     vkm_image_pool ImagePool;       /* owns VkImage, VkImageView */
 };

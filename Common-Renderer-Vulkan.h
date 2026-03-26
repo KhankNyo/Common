@@ -193,13 +193,10 @@ struct renderer
     } GpuContext;
     struct vk_swapchain { 
         VkSwapchainKHR Handle;
-        VkExtent2D Extent;
+        int Width;
+        int Height;
         VkFormat ImageFormat;
         VkPresentModeKHR PresentMode;
-
-        u32 ImageCount;
-
-        arena_context ArenaContext;
     } Swapchain;
 #ifndef NEW_API
     struct vk_swapchain_image {

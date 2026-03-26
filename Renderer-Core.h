@@ -253,7 +253,6 @@ typedef enum
 
 struct renderer_resource_group_config 
 {
-    isize ImagePoolSizeBytes;
     isize GpuBufferPoolSizeBytes;
     isize CpuBufferPoolSizeBytes;
     isize UniformBufferSizeBytes;

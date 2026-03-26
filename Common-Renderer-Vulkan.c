@@ -631,7 +631,6 @@ internal vk_swapchain Vulkan_CreateSwapchain(
     VkPresentModeKHR PresentMode = VK_PRESENT_MODE_FIFO_KHR; /* FIFO is guaranteed by the Vulkan spec */
     VkSurfaceFormatKHR SelectedFormat = { 0 };
     VkExtent2D Extent = { 0 };
-    u32 ImageCount = 0;
     Arena_Scope(&TmpArena)
     {
         vk_swapchain_support_config Config = { 0 };
@@ -702,7 +701,7 @@ internal vk_swapchain Vulkan_CreateSwapchain(
             VkSwapchainCreateInfoKHR CreateInfo;
             Profiler_Scope(Profiler, "vkCreateSwapchainKHR() -- parameters")
             {
-                ImageCount = Cap->minImageCount + 1;
+                u32 ImageCount = Cap->minImageCount + 1;
                 if (Cap->maxImageCount > 0 && ImageCount > Cap->maxImageCount)
                     ImageCount = Cap->maxImageCount;
                 if (IN_RANGE(Cap->minImageCount, 3, Cap->maxImageCount))
@@ -756,9 +755,9 @@ internal vk_swapchain Vulkan_CreateSwapchain(
     vk_swapchain Swapchain = (vk_swapchain) {
         .Handle = SwapchainHandle,
         .ImageFormat = SelectedFormat.format, 
-        .Extent = Extent, 
+        .Width = Extent.width,
+        .Height = Extent.height,
         .PresentMode = PresentMode,
-        .ImageCount = ImageCount,
     };
     return Swapchain;
 }
@@ -1251,11 +1250,6 @@ internal void Vulkan_EndSingleTimeCommandBuffer(const vk_gpu_context *GpuContext
     vkFreeCommandBuffers(GpuContext->Device, CommandPool, 1, &CmdBuf);
 }
 
-internal bool32 Vulkan_DepthBufferFormatHasStencil(VkFormat Format)
-{
-    return Format == VK_FORMAT_D32_SFLOAT_S8_UINT || Format == VK_FORMAT_D24_UNORM_S8_UINT;
-}
-
 internal void Vulkan_TransitionImageLayout(
     const vk_gpu_context *GpuContext, VkCommandPool CommandPool, 
     VkImage Image, VkFormat Format, VkImageLayout Old, VkImageLayout New, u32 MipLevel
@@ -1286,7 +1280,11 @@ internal void Vulkan_TransitionImageLayout(
                 DstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
                 SrcStageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
                 DstStageFlags = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-                if (Vulkan_DepthBufferFormatHasStencil(Format))
+                bool32 DepthBufferHasStencil = (
+                    Format == VK_FORMAT_D32_SFLOAT_S8_UINT 
+                    || Format == VK_FORMAT_D24_UNORM_S8_UINT
+                );
+                if (DepthBufferHasStencil)
                 {
                     Aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
                 }
@@ -1340,92 +1338,285 @@ internal void Vulkan_TransitionImageLayout(
     Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
 }
 
-
-internal vkm_image_handle Vulkan_CreateDepthBuffer(
-    vk_gpu_context *GpuContext, VkCommandPool CommandPool, 
-    VkSampleCountFlagBits Samples, u32 Width, u32 Height
-) {
-    vkm_image_handle DepthBuffer;
+internal void Vulkan_CreateMainFramebuffers(
+    VkDevice Device, 
+    VkImageView MSAAImageView, 
+    VkImageView DepthBufferImageView, 
+    VkImageView *SwapchainImageViews,
+    VkRenderPass RenderPass,
+    int FramebufferWidth, int FramebufferHeight,
+    int FramebufferCount, VkFramebuffer *OutFramebuffers)
+{
+    for (int i = 0; i < FramebufferCount; i++)
     {
-        VkFormat DepthFormat;
-        {
-            VkFormat DesiredFormat[] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT};
-            DepthFormat = Vulkan_FindSupportedFormat(GpuContext->PhysicalDevice,
-                DesiredFormat, STATIC_ARRAY_SIZE(DesiredFormat),
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
-            );
-        }
+        VkImageView Attachments[] = { 
+            MSAAImageView,
+            DepthBufferImageView,
+            SwapchainImageViews[i]
+        };
+        VkFramebufferCreateInfo CreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .attachmentCount = STATIC_ARRAY_SIZE(Attachments),
+            .pAttachments = Attachments,
+            .renderPass = RenderPass,
+            .width = FramebufferWidth,
+            .height = FramebufferHeight,
+            .layers = 1,
+        };
+        VK_CHECK(vkCreateFramebuffer(Device, &CreateInfo, NULL, &OutFramebuffers[i]));
+    }
+}
 
-        vkm *Vkm = &GpuContext->VkMalloc;
+internal vk_render_target Vulkan_CreateRenderTarget(
+    vkm *Vkm, 
+    arena_alloc *Arena, 
+    VkCommandPool CommandPool,
+    vk_gpu_context *GpuContext, 
+    vk_swapchain *Swapchain, 
+    VkSampleCountFlagBits SampleCount
+) {
+    platform_window_dimensions Monitor = Platform_Get(WindowDimensions);
+    VkDevice Device = GpuContext->Device;
+
+    vkm_image_handle MSAABuffer;
+    vkm_image_info MSAABufferInfo;
+    {
+        MSAABuffer = Vkm_CreateImage(
+            Vkm,
+            &(vkm_image_config) {
+                .Width = Monitor.Width, 
+                .Height = Monitor.Height, 
+                .MipLevels = 1, 
+                .Samples = SampleCount, 
+                .Format = Swapchain->ImageFormat, 
+                .Tiling = VK_IMAGE_TILING_OPTIMAL, 
+                .Usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 
+                .Aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+            }
+        );
+        MSAABufferInfo = Vkm_GetImageInfo(Vkm, MSAABuffer);
+    }
+
+    vkm_image_handle DepthBuffer;
+    vkm_image_info DepthBufferInfo;
+    {
+        VkFormat DesiredFormats[] = {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D32_SFLOAT};
+        VkFormat DepthBufferImageFormat = Vulkan_FindSupportedFormat(
+            GpuContext->PhysicalDevice, 
+            DesiredFormats, STATIC_ARRAY_SIZE(DesiredFormats), 
+            VK_IMAGE_TILING_OPTIMAL,
+            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+        );
+
         DepthBuffer = Vkm_CreateImage(
             Vkm,
             &(vkm_image_config) {
-                .Width = Width, 
-                .Height = Height, 
+                .Width = Monitor.Width, 
+                .Height = Monitor.Height, 
                 .MipLevels = 1, 
-                .Samples = Samples,
-                .Format = DepthFormat,
+                .Samples = SampleCount, 
+                .Format = DepthBufferImageFormat, 
                 .Tiling = VK_IMAGE_TILING_OPTIMAL, 
-                .Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 
+                .Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                 .Aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
             }
         );
-        vkm_image_info DepthBufferInfo = Vkm_GetImageInfo(Vkm, DepthBuffer);
-
-        Vulkan_TransitionImageLayout(GpuContext, CommandPool, 
+        DepthBufferInfo = Vkm_GetImageInfo(Vkm, DepthBuffer);
+        Vulkan_TransitionImageLayout(GpuContext, 
+            CommandPool, 
             DepthBufferInfo.Image,
-            DepthFormat, 
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 
+            DepthBufferImageFormat,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             DepthBufferInfo.MipLevels
         );
     }
-    return DepthBuffer;
-}
 
-internal void Vulkan_ResizeDepthBuffer(
-    vk_gpu_context *GpuContext, VkCommandPool CommandPool, 
-    vkm_image_handle DepthBuffer, 
-    u32 NewWidth, u32 NewHeight
-) {
-    vkm *Vkm = &GpuContext->VkMalloc;
-    Vkm_ResizeImage(Vkm, DepthBuffer, NewWidth, NewHeight);
-
-    vkm_image_info DepthBufferInfo = Vkm_GetImageInfo(Vkm, DepthBuffer);
-    Vulkan_TransitionImageLayout(GpuContext, CommandPool, 
-        DepthBufferInfo.Image,
-        DepthBufferInfo.Format,
-        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 
-        DepthBufferInfo.MipLevels
+    VkRenderPass RenderPass = Vulkan_CreateRenderPass(GpuContext->Device, 
+        SampleCount, Swapchain->ImageFormat, DepthBufferInfo.Format
     );
-}
 
-internal vkm_image_handle Vulkan_CreateColorResource(
-    vk_gpu_context *GpuContext, 
-    VkSampleCountFlagBits Samples, VkFormat Format, u32 Width, u32 Height)
-{
-    vkm_image_handle MSAAResolve = Vkm_CreateImage(
-        &GpuContext->VkMalloc, 
-        &(vkm_image_config) {
-            .Width = Width, 
-            .Height = Height, 
-            .MipLevels = 1, 
-            .Samples = Samples, 
-            .Format = Format, 
-            .Tiling = VK_IMAGE_TILING_OPTIMAL, 
-            .Usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 
-            .Aspect = VK_IMAGE_ASPECT_COLOR_BIT
+    u32 ImageCount;
+    VkImage *SwapchainImages;
+    VkImageView *SwapchainImageViews;
+    {
+        {
+            vkGetSwapchainImagesKHR(Device, Swapchain->Handle, &ImageCount, NULL);
+            Arena_AllocArray(Arena, &SwapchainImages, ImageCount);
+            vkGetSwapchainImagesKHR(Device, Swapchain->Handle, &ImageCount, SwapchainImages);
         }
+
+        {
+            Arena_AllocArray(Arena, &SwapchainImageViews, ImageCount);
+            int MipLevel = 1;
+            for (u32 i = 0; i < ImageCount; i++)
+            {
+                SwapchainImageViews[i] = Vulkan_CreateImageView(Device, 
+                    SwapchainImages[i], Swapchain->ImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, MipLevel
+                );
+            }
+        }
+    }
+
+    VkFramebuffer *Framebuffers;
+    Arena_AllocArrayNonZero(Arena, &Framebuffers, ImageCount);
+    Vulkan_CreateMainFramebuffers(
+        Device, 
+        MSAABufferInfo.ImageView,
+        DepthBufferInfo.ImageView, 
+        SwapchainImageViews,
+        RenderPass,
+        Swapchain->Width,
+        Swapchain->Height,
+        ImageCount, 
+        Framebuffers
     );
-    return MSAAResolve;
+
+    VkSemaphore *Semaphores;
+    Arena_AllocArray(Arena, &Semaphores, ImageCount);
+    for (uint i = 0; i < ImageCount; i++)
+    {
+        VkSemaphoreCreateInfo CreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        };
+        vkCreateSemaphore(Device, &CreateInfo, NULL, &Semaphores[i]);
+    }
+
+    vk_render_target RenderTarget = {
+        .SampleCount = SampleCount,
+
+        .ImageCount = ImageCount,
+        .SwapchainImages = SwapchainImages,
+        .SwapchainImageViews = SwapchainImageViews,
+        .RenderPass = RenderPass,
+        .Framebuffers = Framebuffers,
+
+        .ColorResource = MSAABuffer,
+        .DepthResource = DepthBuffer,
+
+        .GpuWaitForRenderFrame = Semaphores,
+    };
+    return RenderTarget;
+}
+
+internal void Vulkan_ResizeRenderTarget(
+    vk_render_target *RenderTarget,
+    vkm *Vkm, 
+    VkCommandPool CommandPool,
+    vk_gpu_context *GpuContext, 
+    const vk_swapchain *Swapchain
+) {
+    VkDevice Device = GpuContext->Device;
+
+    for (uint i = 0; i < RenderTarget->ImageCount; i++)
+    {
+        vkDestroyImageView(Device, RenderTarget->SwapchainImageViews[i], NULL);
+        vkDestroyFramebuffer(Device, RenderTarget->Framebuffers[i], NULL);
+    }
+
+    RenderTarget->ColorResource = Vkm_ResizeImage(Vkm, RenderTarget->ColorResource, Swapchain->Width, Swapchain->Height);
+    vkm_image_info MSAABufferInfo = Vkm_GetImageInfo(Vkm, RenderTarget->ColorResource);
+
+    vkm_image_info DepthBufferInfo;
+    {
+        RenderTarget->DepthResource = Vkm_ResizeImage(Vkm, RenderTarget->DepthResource, Swapchain->Width, Swapchain->Height);
+        DepthBufferInfo = Vkm_GetImageInfo(Vkm, RenderTarget->DepthResource);
+        Vulkan_TransitionImageLayout(GpuContext, 
+            CommandPool, 
+            DepthBufferInfo.Image,
+            DepthBufferInfo.Format,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            DepthBufferInfo.MipLevels
+        );
+    }
+
+    {
+        u32 ImageCountNow;
+        vkGetSwapchainImagesKHR(Device, Swapchain->Handle, &ImageCountNow, NULL);
+        ASSERT(ImageCountNow == RenderTarget->ImageCount, "Unreachable");
+        vkGetSwapchainImagesKHR(Device, Swapchain->Handle, &ImageCountNow, RenderTarget->SwapchainImages);
+
+        for (u32 i = 0; i < ImageCountNow; i++)
+        {
+            int MipLevel = 1;
+            RenderTarget->SwapchainImageViews[i] = Vulkan_CreateImageView(Device, 
+                RenderTarget->SwapchainImages[i], 
+                Swapchain->ImageFormat, 
+                VK_IMAGE_ASPECT_COLOR_BIT, 
+                MipLevel
+            );
+        }
+    }
+
+    Vulkan_CreateMainFramebuffers(
+        Device, 
+        MSAABufferInfo.ImageView,
+        DepthBufferInfo.ImageView, 
+        RenderTarget->SwapchainImageViews,
+        RenderTarget->RenderPass,
+        Swapchain->Width,
+        Swapchain->Height,
+        RenderTarget->ImageCount,
+        RenderTarget->Framebuffers
+    );
 }
 
 
 
-internal void Vulkan_RecreateSwapchain(renderer *Vk, arena_alloc *Arena)
+internal void Vulkan_RecreateSwapchain(renderer *Vk)
 {
 #ifdef NEW_API
-    RUNTIME_TODO("recreate swapchain with new api");
+    Vk->IsResized = false;
+    VkDevice Device = Vulkan_GetDevice(Vk);
+    vk_gpu_context *GpuContext = &Vk->GpuContext;
+
+    Profiler_Scope(Vk->Profiler, "Vulkan_RecreateSwapchain()")
+    {
+        Profiler_Scope(Vk->Profiler, "vkDeviceWaitIdle()")
+        {
+            vkDeviceWaitIdle(Device);
+        }
+
+        int Width, Height;
+        {
+            platform_framebuffer_dimensions FramebufferDimensions = Platform_Get(FramebufferDimensions);
+            Width = FramebufferDimensions.Width;
+            Height = FramebufferDimensions.Height;
+        }
+
+        {
+            vk_swapchain NewSwapchain;
+            Profiler_Scope(Vk->Profiler, "Vulkan_CreateSwapchain()")
+            {
+                NewSwapchain = Vulkan_CreateSwapchain(
+                    Vk->Profiler, 
+                    GpuContext, 
+                    Width, Height, 
+                    Vk->ForceTripleBuffering, 
+                    Vk->WindowSurface, 
+                    Vk->Swapchain.Handle,
+                    Vk->Arena
+                );
+            }
+            Profiler_Scope(Vk->Profiler, "Vulkan_DestroySwapchain()")
+            {
+                Vulkan_DestroySwapchain(Device, &Vk->Swapchain);
+            }
+            Vk->Swapchain = NewSwapchain;
+        }
+        Profiler_Scope(Vk->Profiler, "Vulkan_ResizeFramebuffer()")
+        {
+            Vulkan_ResizeRenderTarget(
+                &Vk->RenderTarget, 
+                &Vk->GlobalResourceGroup->GpuAllocator, 
+                Vk->CommandPool, 
+                GpuContext, 
+                &Vk->Swapchain
+            );
+        }
+    }
+
 #else
     Vk->IsResized = false;
     profiler *Profiler = Vk->Profiler;
@@ -1563,7 +1754,10 @@ internal void Vulkan_RecordCommandBuffer(
             .renderPass = Vk->RenderTarget.RenderPass,
             .renderArea = {
                 .offset = { 0 },
-                .extent = Swapchain->Extent,
+                .extent = {
+                    .width = Swapchain->Width,
+                    .height = Swapchain->Height,
+                },
             },
             .framebuffer = Vk->RenderTarget.Framebuffers[FramebufferIndex],
 
@@ -1574,9 +1768,9 @@ internal void Vulkan_RecordCommandBuffer(
         {
             VkViewport FullScreenViewport = { 
                 .x = 0, 
-                .y = (float)Swapchain->Extent.height, 
-                .width = (float)Swapchain->Extent.width, 
-                .height = -(float)Swapchain->Extent.height,
+                .y = (float)Swapchain->Height, 
+                .width = (float)Swapchain->Width, 
+                .height = -(float)Swapchain->Height,
                 .maxDepth = 1.0f, 
                 .minDepth = 0.0f,
             };
@@ -1603,8 +1797,8 @@ internal void Vulkan_RecordCommandBuffer(
                             .y = Group->Scissor.OffsetY,
                         },
                         .extent = {
-                            .width = Group->Scissor.Width == 0? Swapchain->Extent.width : Group->Scissor.Width,
-                            .height = Group->Scissor.Height == 0? Swapchain->Extent.height : Group->Scissor.Height,
+                            .width = Group->Scissor.Width == 0? Swapchain->Width : Group->Scissor.Width,
+                            .height = Group->Scissor.Height == 0? Swapchain->Height : Group->Scissor.Height,
                         },
                     }; 
 
@@ -1674,9 +1868,9 @@ internal void Vulkan_RecordCommandBuffer(
         {
             VkViewport FullScreenViewport = { 
                 .x = 0, 
-                .y = (float)Swapchain->Extent.height, 
-                .width = (float)Swapchain->Extent.width, 
-                .height = -(float)Swapchain->Extent.height,
+                .y = (float)Swapchain->Height, 
+                .width = (float)Swapchain->Width, 
+                .height = -(float)Swapchain->Height,
                 .maxDepth = 1.0f, 
                 .minDepth = 0.0f,
             };
@@ -1703,8 +1897,8 @@ internal void Vulkan_RecordCommandBuffer(
                             .y = Group->Scissor.OffsetY,
                         },
                         .extent = {
-                            .width = Group->Scissor.Width == 0? Swapchain->Extent.width : Group->Scissor.Width,
-                            .height = Group->Scissor.Height == 0? Swapchain->Extent.height : Group->Scissor.Height,
+                            .width = Group->Scissor.Width == 0? Swapchain->Width : Group->Scissor.Width,
+                            .height = Group->Scissor.Height == 0? Swapchain->Height : Group->Scissor.Height,
                         },
                     }; 
 
@@ -2142,7 +2336,8 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
             );
             if (Result == VK_ERROR_OUT_OF_DATE_KHR)
             {
-                UNREACHABLE_IF(true, "TODO: recreate swapchain");
+                Vulkan_RecreateSwapchain(Vk);
+                return;
             }
             else if (Result == VK_SUBOPTIMAL_KHR || Result == VK_SUCCESS)
             {
@@ -2208,7 +2403,7 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
         VkResult Result = vkQueuePresentKHR(GpuContext->PresentQueue, &PresentInfo);
         if (Result == VK_ERROR_OUT_OF_DATE_KHR || Result == VK_SUBOPTIMAL_KHR || Vk->IsResized)
         {
-            UNREACHABLE_IF(true, "TODO: recreate swapchain after present");
+            Vulkan_RecreateSwapchain(Vk);
         }
         else if (Result != VK_SUCCESS)
         {
@@ -2369,10 +2564,14 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
 
         vkm_buffer_config StagingBufferConfig = {
             .BufferType = VKM_BUFFER_TYPE_STAGING,
-            .MemoryCapacityBytes = 64*MB,
+            .MemoryCapacityBytes = 8*MB,
         };
         GpuContext->StagingBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, &StagingBufferConfig);
         GpuContext->StagingBufferPtr = Vkm_MapBufferMemory(&GpuContext->VkMalloc, GpuContext->StagingBuffer);
+        Vkm_CreateBuffer(&GpuContext->VkMalloc, &StagingBufferConfig);
+        Vkm_CreateBuffer(&GpuContext->VkMalloc, &StagingBufferConfig);
+        Vkm_CreateBuffer(&GpuContext->VkMalloc, &StagingBufferConfig);
+        Vkm_CreateBuffer(&GpuContext->VkMalloc, &StagingBufferConfig);
     }
 
 
@@ -2393,9 +2592,8 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
     /* default/global resource group */
     {
         renderer_resource_group_config ResourceConfig = { 
-            .CpuBufferPoolSizeBytes = 4*KB,
-            .GpuBufferPoolSizeBytes = 8*MB,
-            .ImagePoolSizeBytes = 8*MB,
+            .CpuBufferPoolSizeBytes = 2*MB,
+            .GpuBufferPoolSizeBytes = 256*MB,
 
             .UniformBufferBinding = 0,
             .UniformBufferSizeBytes = 1, /* TODO: put a useful uniform buffer here */
@@ -2444,147 +2642,14 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
     int MSAASampleCount = 4;
     {
         vk_resource_group *ResourceGroup = Vk->GlobalResourceGroup;
-        {
-            platform_window_dimensions Monitor = Platform_Get(MonitorDimensions);
-            vk_gpu_context *GpuContext = &Vk->GpuContext;
-            VkDevice Device = GpuContext->Device;
-            VkSampleCountFlags SampleCount = Vulkan_GetVkSampleCountFlags(&Vk->Gpus.Selected, MSAASampleCount);
-
-            vkm_image_handle MSAABuffer;
-            vkm_image_info MSAABufferInfo;
-            {
-                MSAABuffer = Vkm_CreateImage(
-                    &ResourceGroup->GpuAllocator,
-                    &(vkm_image_config) {
-                        .Width = Monitor.Width, 
-                        .Height = Monitor.Height, 
-                        .MipLevels = 1, 
-                        .Samples = SampleCount, 
-                        .Format = Vk->Swapchain.ImageFormat, 
-                        .Tiling = VK_IMAGE_TILING_OPTIMAL, 
-                        .Usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 
-                        .Aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                    }
-                );
-                MSAABufferInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, MSAABuffer);
-            }
-
-            VkFormat DepthBufferImageFormat;
-            vkm_image_handle DepthBuffer;
-            vkm_image_info DepthBufferInfo;
-            {
-                VkFormat DesiredFormats[] = {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D32_SFLOAT};
-                DepthBufferImageFormat = Vulkan_FindSupportedFormat(
-                    GpuContext->PhysicalDevice, 
-                    DesiredFormats, STATIC_ARRAY_SIZE(DesiredFormats), 
-                    VK_IMAGE_TILING_OPTIMAL,
-                    VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
-                );
-
-                DepthBuffer = Vkm_CreateImage(
-                    &ResourceGroup->GpuAllocator, 
-                    &(vkm_image_config) {
-                        .Width = Monitor.Width, 
-                        .Height = Monitor.Height, 
-                        .MipLevels = 1, 
-                        .Samples = SampleCount, 
-                        .Format = DepthBufferImageFormat, 
-                        .Tiling = VK_IMAGE_TILING_OPTIMAL, 
-                        .Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                        .Aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
-                    }
-                );
-                DepthBufferInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, DepthBuffer);
-                Vulkan_TransitionImageLayout(GpuContext, 
-                    Vk->CommandPool, 
-                    DepthBufferInfo.Image,
-                    DepthBufferImageFormat,
-                    VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                    DepthBufferInfo.MipLevels
-                );
-            }
-
-            VkImage *SwapchainImages;
-            VkImageView *SwapchainImageViews;
-            {
-                u32 ImageCount = Vk->Swapchain.ImageCount;
-                {
-                    u32 ImageCountNow;
-                    vkGetSwapchainImagesKHR(Device, Vk->Swapchain.Handle, &ImageCountNow, NULL);
-                    ASSERT(ImageCountNow == Vk->Swapchain.ImageCount, "Unreachable?");
-                    Arena_AllocArray(Arena, &SwapchainImages, ImageCount);
-                    vkGetSwapchainImagesKHR(Device, Vk->Swapchain.Handle, &ImageCount, SwapchainImages);
-                }
-
-                {
-                    Arena_AllocArray(&Vk->Arena, &SwapchainImageViews, ImageCount);
-                    int MipLevel = 1;
-                    for (u32 i = 0; i < ImageCount; i++)
-                    {
-                        SwapchainImageViews[i] = Vulkan_CreateImageView(Device, 
-                            SwapchainImages[i], Vk->Swapchain.ImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, MipLevel
-                        );
-                    }
-                }
-            }
-
-            VkRenderPass RenderPass = Vulkan_CreateRenderPass(GpuContext->Device, 
-                SampleCount, Vk->Swapchain.ImageFormat, DepthBufferImageFormat
-            );
-
-            u32 ImageCount = Vk->Swapchain.ImageCount;
-            VkFramebuffer *Framebuffers;
-            {
-                int SwapchainWidth = Vk->Swapchain.Extent.width;
-                int SwapchainHeight = Vk->Swapchain.Extent.height;
-
-                Arena_AllocArray(Arena, &Framebuffers, ImageCount);
-                for (u32 i = 0; i < ImageCount; i++)
-                {
-                    VkImageView Attachments[] = { 
-                        MSAABufferInfo.ImageView,
-                        DepthBufferInfo.ImageView,
-                        SwapchainImageViews[i]
-                    };
-                    VkFramebufferCreateInfo CreateInfo = {
-                        .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-                        .attachmentCount = STATIC_ARRAY_SIZE(Attachments),
-                        .pAttachments = Attachments,
-                        .renderPass = RenderPass,
-                        .width = SwapchainWidth,
-                        .height = SwapchainHeight,
-                        .layers = 1,
-                    };
-                    VK_CHECK(vkCreateFramebuffer(Device, &CreateInfo, NULL, &Framebuffers[i]));
-                }
-            }
-
-            VkSemaphore *Semaphores;
-            Arena_AllocArray(Arena, &Semaphores, ImageCount);
-            for (uint i = 0; i < ImageCount; i++)
-            {
-                VkSemaphoreCreateInfo CreateInfo = {
-                    .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-                };
-                vkCreateSemaphore(Device, &CreateInfo, NULL, &Semaphores[i]);
-            }
-
-            Vk->RenderTarget = (vk_render_target) {
-                .SampleCount = SampleCount,
-
-                .ImageCount = ImageCount,
-                .SwapchainImages = SwapchainImages,
-                .SwapchainImageViews = SwapchainImageViews,
-                .RenderPass = RenderPass,
-                .Framebuffers = Framebuffers,
-
-                .ColorResource = MSAABuffer,
-                .DepthResource = DepthBuffer,
-
-                .GpuWaitForRenderFrame = Semaphores,
-            };
-        }
+        Vk->RenderTarget = Vulkan_CreateRenderTarget(
+            &ResourceGroup->GpuAllocator, 
+            Arena, 
+            Vk->CommandPool, 
+            GpuContext, 
+            &Vk->Swapchain, 
+            Vulkan_GetVkSampleCountFlags(&Vk->Gpus.Selected, MSAASampleCount)
+        );
 
         VkFence *Fences;
         VkSemaphore *Semaphores;

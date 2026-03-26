@@ -90,7 +90,6 @@ internal void InitRenderer(app *App, const char *AppName)
         renderer_resource_group_config Config = {
             .CpuBufferPoolSizeBytes = 4096,
             .GpuBufferPoolSizeBytes = 4096,
-            .ImagePoolSizeBytes = 4096,
 
             .UniformBufferBinding = 0,
             .UniformBufferSizeBytes = 1,
