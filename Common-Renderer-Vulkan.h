@@ -90,6 +90,7 @@ typedef_struct(vk_resource_group);
 
 struct vk_mesh
 {
+    vk_resource_group *Owner;
     vkm_buffer_handle VertexBuffer;
     vkm_buffer_handle IndexBuffer;
     isize VertexBufferSizeBytes, IndexBufferSizeBytes;
@@ -246,8 +247,7 @@ struct renderer
 #ifdef NEW_API
     vk_resource_group *ResourceGroupHead, 
                       *ResourceGroupFreeSlots, 
-                      *GlobalResourceGroup, 
-                      *CurrentlyBoundResourceGroup;
+                      *GlobalResourceGroup;
 
     struct vk_render_target
     {

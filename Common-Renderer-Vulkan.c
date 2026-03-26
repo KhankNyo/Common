@@ -1541,13 +1541,13 @@ internal void Vulkan_RecreateSwapchain(renderer *Vk, arena_alloc *Arena)
 
 
 internal void Vulkan_RecordCommandBuffer(
-    renderer *Vk, VkCommandBuffer CmdBuffer, u32 FramebufferIndex,
+    renderer *Vk, 
+    VkCommandBuffer CmdBuffer, 
+    u32 FramebufferIndex,
     const renderer_draw_pipeline *Pipelines, i32 PipelineCount
 ) {
 #ifdef NEW_API
     vk_swapchain *Swapchain = &Vk->Swapchain;
-    ASSERT(Vk->CurrentlyBoundResourceGroup);
-
     VkCommandBufferBeginInfo BeginInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .pInheritanceInfo = NULL, /* NOTE: for secondary command buffers */
@@ -1595,6 +1595,7 @@ internal void Vulkan_RecordCommandBuffer(
                 {
                     const renderer_draw_pipeline_group *Group = DrawPipeline->Groups + k;
                     const vk_mesh *Mesh = Vulkan_ResourceGroup_GetMesh(Vk, Group->MeshHandle);
+                    const vk_resource_group *MeshOwner = Mesh->Owner;
 
                     VkRect2D Scissor = {
                         .offset = {
@@ -1610,18 +1611,16 @@ internal void Vulkan_RecordCommandBuffer(
                     vkCmdSetScissor(CmdBuffer, 0, 1, &Scissor);
                     ASSERT(Mesh->IndexCount, "handle: %llu", (long long unsigned)Group->MeshHandle.Value);
 
-                    vkm_buffer_info VertexBufferInfo = Vkm_GetBufferInfo(&Vk->CurrentlyBoundResourceGroup->GpuAllocator, Mesh->VertexBuffer);
-                    vkm_buffer_info IndexBufferInfo = Vkm_GetBufferInfo(&Vk->CurrentlyBoundResourceGroup->GpuAllocator, Mesh->IndexBuffer);
+                    vkm_buffer_info VertexBufferInfo = Vkm_GetBufferInfo(&MeshOwner->GpuAllocator, Mesh->VertexBuffer);
+                    vkm_buffer_info IndexBufferInfo = Vkm_GetBufferInfo(&MeshOwner->GpuAllocator, Mesh->IndexBuffer);
 
                     VkBuffer VertexBuffers[] = { VertexBufferInfo.Buffer };
-                    ASSERT(VertexBuffers[0] != NULL, "Did you bind the correct resource group before draw call?");
-
                     VkDeviceSize Offsets[] = { VertexBufferInfo.OffsetBytes };
                     vkCmdBindVertexBuffers(CmdBuffer, 0, 1, VertexBuffers, Offsets);
 
                     vkCmdBindIndexBuffer(CmdBuffer, IndexBufferInfo.Buffer, IndexBufferInfo.OffsetBytes, VK_INDEX_TYPE_UINT32);
 
-                    VkDescriptorSet *CurrentDescriptorSet = Vk->CurrentlyBoundResourceGroup->DescriptorSets + Vk->CurrentFrame;
+                    VkDescriptorSet *CurrentDescriptorSet = MeshOwner->DescriptorSets + Vk->CurrentFrame;
                     vkCmdBindDescriptorSets(CmdBuffer, 
                         VK_PIPELINE_BIND_POINT_GRAPHICS, 
                         Pipeline->Layout, 
@@ -2128,8 +2127,6 @@ internal void Vulkan_GenerateMipmap(
 void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 PipelineCount)
 {
 #ifdef NEW_API
-    ASSERT(Vk->CurrentlyBoundResourceGroup, "Renderer_BindResourceGroup() must be called before rendering");
-
     VkDevice Device = Vulkan_GetDevice(Vk);
     vk_swapchain *Swapchain = &Vk->Swapchain;
     vk_gpu_context *GpuContext = &Vk->GpuContext;
@@ -2674,25 +2671,6 @@ internal u32 Vulkan_ResourceGroup_PushGraphicsPipeline(vk_resource_group *Resour
     return Index;
 }
 
-internal void *Vulkan_ResourceGroup_AllocateRoutine(void *UserData, const memory_alloc_parameter *Param)
-{
-    arena_alloc *Arena = UserData;
-    switch (Param->Mode)
-    {
-    case ALLOCATOR_ALLOCATE:
-    {
-        void *Ptr = 0;
-        Arena_ScopedAlignment(Arena, Param->As.Allocate.Alignment)
-        {
-            Ptr = Arena_Alloc(Arena, Param->As.Allocate.SizeBytes);
-        }
-        return Ptr;
-    } break;
-    case ALLOCATOR_FREE:
-        break;
-    }
-    return NULL;
-}
 
 internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *ResourceGroup, const renderer_resource_group_config *Config)
 {
@@ -2702,11 +2680,12 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
     {
         int Alignment = 8;
         Arena_Create(&ResourceGroup->CpuArena, Vk->Arena.UserAlloc, Config->CpuBufferPoolSizeBytes, Alignment);
-        memory_alloc_interface ArenaInterface = {
-            .UserData = &ResourceGroup->CpuArena,
-            .Routine = Vulkan_ResourceGroup_AllocateRoutine,
-        };
-        FreeList_Create(&ResourceGroup->CpuAllocator, ArenaInterface, Config->CpuBufferPoolSizeBytes/2, Alignment);
+        FreeList_Create(
+            &ResourceGroup->CpuAllocator, 
+            Arena_AsAllocInterface(&ResourceGroup->CpuArena), 
+            Config->CpuBufferPoolSizeBytes/2, 
+            Alignment
+        );
 
         Vkm_Create(
             &ResourceGroup->GpuAllocator,
@@ -2786,6 +2765,7 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
     Arena_Scope(Arena)
     {
         {
+            /* TODO: make this dynamic? */
             VkDescriptorSetLayoutBinding Bindings[] = {
                 [0] = {
                     .binding = Config->UniformBufferBinding,
@@ -2834,9 +2814,8 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
 
 internal void Vulkan_ResourceGroup_Deinit(renderer *Vk, vk_resource_group *ResourceGroup, bool32 ShouldDestroyDefaultResources)
 {
-    /* NOTE: Might not need to wait for the device to become idle? */
+    /* TODO: wait for resources in use? */
     VkDevice Device = Vulkan_GetDevice(Vk);
-    vkDeviceWaitIdle(Device);
 
     isize Start = ShouldDestroyDefaultResources? 0 : 1;
     for (isize i = Start; i < ResourceGroup->Samplers.Count; i++)
@@ -3002,8 +2981,6 @@ void Renderer_BindResourceGroup(
             vkUpdateDescriptorSets(Device, STATIC_ARRAY_SIZE(Writes), Writes, 0, NULL);
         }
     }
-
-    Vk->CurrentlyBoundResourceGroup = ResourceGroup;
 }
 
 
@@ -3250,6 +3227,7 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
      * */
     vk_mesh *MeshPtr = FreeList_AllocNonZero(&ResourceGroup->CpuAllocator, sizeof(*MeshPtr));
     *MeshPtr = (vk_mesh) {
+        .Owner = ResourceGroup,
         .IndexBufferSizeBytes = IndexBufferSizeBytes,
         .VertexBufferSizeBytes = VertexBufferSizeBytes,
         .VertexCount = MeshConfig->VertexCount,
