@@ -62,7 +62,7 @@ typedef_struct(vk_uniform_buffer);
 
 #ifdef NEW_API
 typedef_struct(vk_render_target);
-typedef_struct(vk_render_control);
+typedef_struct(vk_render_frame);
 
 struct vk_texture
 {
@@ -257,21 +257,20 @@ struct renderer
         VkFramebuffer *Framebuffers;
         VkImage *SwapchainImages;
         VkImageView *SwapchainImageViews;
-        VkSemaphore *OnRenderControlFinish;
+        VkSemaphore *GpuWaitForRenderFrame;
 
         VkRenderPass RenderPass;
         vkm_image_handle DepthResource;
         vkm_image_handle ColorResource;
     } RenderTarget;
 
-    /* NOTE: vk_render_control */
     VkCommandPool CommandPool;
-    struct vk_render_control
+    struct vk_render_frame
     {
         VkCommandBuffer *CommandBuffers;
-        VkFence *BlockCpuWhenFrameIsStillInFlight;
-        VkSemaphore *OnRenderTargetAvailable;
-    } RenderControl;
+        VkFence *CpuWaitThisFrame;
+        VkSemaphore *GpuWaitForRenderTarget;
+    } RenderFrame;
     int CurrentFrame;
     int FramesInFlight;
 #else

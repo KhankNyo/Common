@@ -117,6 +117,7 @@ struct vkm
     i64 DeviceMemoryPoolCapacityBytes;
 
     dynamic_array(vkm_device_memory) DeviceMemory;
+    dynamic_array(VkImageView) SeparateImageViews;
 
     vkm_device_memory_node *DeviceMemoryNodeFree;
     vkm_device_memory_node *DeviceMemoryPoolHead[VK_MAX_MEMORY_TYPES];
@@ -180,7 +181,6 @@ struct vkm_buffer_config
 
 void Vkm_Create(vkm *Vkm, arena_alloc *Arena, const vkm_config *Config);
 void Vkm_Destroy(vkm *Vkm);
-void Vkm_Reset(vkm *Vkm);
 
 vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, const vkm_buffer_config *Config);
 vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config);

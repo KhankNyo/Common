@@ -2130,19 +2130,18 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
 #ifdef NEW_API
     ASSERT(Vk->CurrentlyBoundResourceGroup, "Renderer_BindResourceGroup() must be called before rendering");
 
-    arena_alloc *Arena = &Vk->Arena;
     VkDevice Device = Vulkan_GetDevice(Vk);
     vk_swapchain *Swapchain = &Vk->Swapchain;
     vk_gpu_context *GpuContext = &Vk->GpuContext;
 
     u32 ImageIndex = 0;
     {
-        VkSemaphore RenderTargetAvailable = Vk->RenderControl.OnRenderTargetAvailable[Vk->CurrentFrame];
-        VkFence *Fence = &Vk->RenderControl.BlockCpuWhenFrameIsStillInFlight[Vk->CurrentFrame];
+        VkSemaphore GpuWaitForRenderTarget = Vk->RenderFrame.GpuWaitForRenderTarget[Vk->CurrentFrame];
+        VkFence *Fence = &Vk->RenderFrame.CpuWaitThisFrame[Vk->CurrentFrame];
         vkWaitForFences(Device, 1, Fence, VK_TRUE, UINT64_MAX);
         {
             VkResult Result = vkAcquireNextImageKHR(Device, Swapchain->Handle, UINT64_MAX, 
-                RenderTargetAvailable, VK_NULL_HANDLE, &ImageIndex
+                GpuWaitForRenderTarget, VK_NULL_HANDLE, &ImageIndex
             );
             if (Result == VK_ERROR_OUT_OF_DATE_KHR)
             {
@@ -2162,8 +2161,8 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
 
     /* record command buffer */
     {
-        VK_CHECK(vkResetCommandBuffer(Vk->RenderControl.CommandBuffers[Vk->CurrentFrame], 0));
-        Vulkan_RecordCommandBuffer(Vk, Vk->RenderControl.CommandBuffers[Vk->CurrentFrame], ImageIndex, Pipelines, PipelineCount);
+        VK_CHECK(vkResetCommandBuffer(Vk->RenderFrame.CommandBuffers[Vk->CurrentFrame], 0));
+        Vulkan_RecordCommandBuffer(Vk, Vk->RenderFrame.CommandBuffers[Vk->CurrentFrame], ImageIndex, Pipelines, PipelineCount);
         bool32 ShouldUpdateUniformBuffer = false;
         if (ShouldUpdateUniformBuffer)
         {
@@ -2172,8 +2171,8 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
     }
 
 
-    VkSemaphore GraphicsQueueWait[] = { Vk->RenderControl.OnRenderTargetAvailable[Vk->CurrentFrame], };
-    VkSemaphore GraphicsQueueSignal[] = { Vk->RenderTarget.OnRenderControlFinish[ImageIndex], };
+    VkSemaphore GraphicsQueueWait[] = { Vk->RenderFrame.GpuWaitForRenderTarget[Vk->CurrentFrame], };
+    VkSemaphore GraphicsQueueSignal[] = { Vk->RenderTarget.GpuWaitForRenderFrame[ImageIndex], };
 
     /* submit to graphics queue */
     {
@@ -2188,11 +2187,11 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
             .signalSemaphoreCount = STATIC_ARRAY_SIZE(GraphicsQueueSignal),
             .pSignalSemaphores = GraphicsQueueSignal,
             .commandBufferCount = 1,
-            .pCommandBuffers = &Vk->RenderControl.CommandBuffers[Vk->CurrentFrame],
+            .pCommandBuffers = &Vk->RenderFrame.CommandBuffers[Vk->CurrentFrame],
         };
         VK_CHECK(vkQueueSubmit(GpuContext->GraphicsQueue, 
             1, &GraphicsQueueSubmitInfo,
-            Vk->RenderControl.BlockCpuWhenFrameIsStillInFlight[Vk->CurrentFrame]
+            Vk->RenderFrame.CpuWaitThisFrame[Vk->CurrentFrame]
         ));
     }
 
@@ -2394,9 +2393,6 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
     );
 
 #ifdef NEW_API
-    {
-    }
-
     /* default/global resource group */
     {
         renderer_resource_group_config ResourceConfig = { 
@@ -2520,7 +2516,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
                     u32 ImageCountNow;
                     vkGetSwapchainImagesKHR(Device, Vk->Swapchain.Handle, &ImageCountNow, NULL);
                     ASSERT(ImageCountNow == Vk->Swapchain.ImageCount, "Unreachable?");
-                    Arena_AllocArray(&Vk->Arena, &SwapchainImages, ImageCount);
+                    Arena_AllocArray(Arena, &SwapchainImages, ImageCount);
                     vkGetSwapchainImagesKHR(Device, Vk->Swapchain.Handle, &ImageCount, SwapchainImages);
                 }
 
@@ -2530,8 +2526,8 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
                     for (u32 i = 0; i < ImageCount; i++)
                     {
                         SwapchainImageViews[i] = Vulkan_CreateImageView(Device, 
-                                SwapchainImages[i], Vk->Swapchain.ImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, MipLevel
-                                );
+                            SwapchainImages[i], Vk->Swapchain.ImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, MipLevel
+                        );
                     }
                 }
             }
@@ -2546,7 +2542,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
                 int SwapchainWidth = Vk->Swapchain.Extent.width;
                 int SwapchainHeight = Vk->Swapchain.Extent.height;
 
-                FreeList_AllocArray(&ResourceGroup->CpuAllocator, &Framebuffers, ImageCount);
+                Arena_AllocArray(Arena, &Framebuffers, ImageCount);
                 for (u32 i = 0; i < ImageCount; i++)
                 {
                     VkImageView Attachments[] = { 
@@ -2568,7 +2564,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
             }
 
             VkSemaphore *Semaphores;
-            FreeList_AllocArray(&ResourceGroup->CpuAllocator, &Semaphores, ImageCount);
+            Arena_AllocArray(Arena, &Semaphores, ImageCount);
             for (uint i = 0; i < ImageCount; i++)
             {
                 VkSemaphoreCreateInfo CreateInfo = {
@@ -2589,7 +2585,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
                 .ColorResource = MSAABuffer,
                 .DepthResource = DepthBuffer,
 
-                .OnRenderControlFinish = Semaphores,
+                .GpuWaitForRenderFrame = Semaphores,
             };
         }
 
@@ -2597,9 +2593,9 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
         VkSemaphore *Semaphores;
         VkCommandBuffer *CommandBuffers;
         {
-            FreeList_AllocArray(&ResourceGroup->CpuAllocator, &Semaphores, Vk->FramesInFlight);
-            FreeList_AllocArray(&ResourceGroup->CpuAllocator, &Fences, Vk->FramesInFlight);
-            FreeList_AllocArray(&ResourceGroup->CpuAllocator, &CommandBuffers, Vk->FramesInFlight);
+            Arena_AllocArray(Arena, &Semaphores, Vk->FramesInFlight);
+            Arena_AllocArray(Arena, &Fences, Vk->FramesInFlight);
+            Arena_AllocArray(Arena, &CommandBuffers, Vk->FramesInFlight);
 
             VkSemaphoreCreateInfo SemaphoreCreateInfo = {
                 .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -2622,10 +2618,10 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
             };
             VK_CHECK(vkAllocateCommandBuffers(Device, &CommandBufferAllocateInfo, CommandBuffers));
         }
-        Vk->RenderControl = (vk_render_control) {
+        Vk->RenderFrame = (vk_render_frame) {
             .CommandBuffers = CommandBuffers,
-            .BlockCpuWhenFrameIsStillInFlight = Fences,
-            .OnRenderTargetAvailable = Semaphores,
+            .CpuWaitThisFrame = Fences,
+            .GpuWaitForRenderTarget = Semaphores,
         };
     }
 
@@ -2836,31 +2832,27 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
     ResourceGroup->DescriptorSets = DescriptorSets;
 }
 
-internal void Vulkan_ResourceGroup_Deinit(renderer *Vk, vk_resource_group *ResourceGroup)
+internal void Vulkan_ResourceGroup_Deinit(renderer *Vk, vk_resource_group *ResourceGroup, bool32 ShouldDestroyDefaultResources)
 {
     /* NOTE: Might not need to wait for the device to become idle? */
     VkDevice Device = Vulkan_GetDevice(Vk);
     vkDeviceWaitIdle(Device);
 
-    for (isize i = 1; i < ResourceGroup->Samplers.Count; i++)
+    isize Start = ShouldDestroyDefaultResources? 0 : 1;
+    for (isize i = Start; i < ResourceGroup->Samplers.Count; i++)
     {
         vkDestroySampler(Device, ResourceGroup->Samplers.Data[i], NULL);
     }
-    for (isize i = 1; i < ResourceGroup->Textures.Count; i++)
+    for (isize i = 0; i < ResourceGroup->GraphicsPipelines.Count; i++)
     {
-        vkDestroyImageView(Device, ResourceGroup->Textures.Data[i].ImageView, NULL);
-    }
-    for (isize i = 1; i < ResourceGroup->GraphicsPipelines.Count; i++)
-    {
-        vkDestroyPipeline(Device, ResourceGroup->GraphicsPipelines.Data[i].Handle, NULL);
-        vkDestroyPipelineLayout(Device, ResourceGroup->GraphicsPipelines.Data[i].Layout, NULL);
+        Vulkan_DestroyGraphicsPipeline(Device, &ResourceGroup->GraphicsPipelines.Data[i]);
     }
     vkDestroyDescriptorSetLayout(Device, ResourceGroup->DescriptorSetLayout, NULL);
     vkDestroyDescriptorPool(Device, ResourceGroup->DescriptorPool, NULL);
 
-    Arena_Destroy(&ResourceGroup->CpuArena);
     /* NOTE: don't need to destroy the free list since the arena owns it */
-    Vkm_Reset(&ResourceGroup->GpuAllocator);
+    Vkm_Destroy(&ResourceGroup->GpuAllocator);
+    Arena_Destroy(&ResourceGroup->CpuArena);
 }
 
 
@@ -2932,7 +2924,8 @@ void Renderer_DestroyResourceGroup(
         Next->Prev = Prev;
     }
 
-    Vulkan_ResourceGroup_Deinit(Vk, ResourceGroup);
+    bool32 ShouldDestroyDefaultResources = false;
+    Vulkan_ResourceGroup_Deinit(Vk, ResourceGroup, ShouldDestroyDefaultResources);
 
     /* put in free list */
     {
@@ -3757,12 +3750,30 @@ void Renderer_Destroy(renderer *Vk)
         ResourceGroup;
         ResourceGroup = ResourceGroup->Next)
     {
-        Vulkan_ResourceGroup_Deinit(Vk, ResourceGroup);
+        bool32 ShouldDestroyDefaultResources = ResourceGroup == Vk->GlobalResourceGroup;
+        Vulkan_ResourceGroup_Deinit(Vk, ResourceGroup, ShouldDestroyDefaultResources);
     }
     for (int i = 0; i < Vk->FramesInFlight; i++)
     {
-        vkDestroySemaphore(Device, Vk->RenderControl.OnRenderTargetAvailable[i], NULL);
+        vkDestroySemaphore(Device, Vk->RenderFrame.GpuWaitForRenderTarget[i], NULL);
+        vkDestroyFence(Device, Vk->RenderFrame.CpuWaitThisFrame[i], NULL);
     }
+    for (uint i = 0; i < Vk->RenderTarget.ImageCount; i++)
+    {
+        vkDestroySemaphore(Device, Vk->RenderTarget.GpuWaitForRenderFrame[i], NULL);
+        vkDestroyImageView(Device, Vk->RenderTarget.SwapchainImageViews[i], NULL);
+        vkDestroyFramebuffer(Device, Vk->RenderTarget.Framebuffers[i], NULL);
+    }
+    vkDestroySwapchainKHR(Device, Vk->Swapchain.Handle, NULL);
+    vkDestroyRenderPass(Device, Vk->RenderTarget.RenderPass, NULL);
+    Vkm_Destroy(&GpuContext->VkMalloc);
+    vkDestroyCommandPool(Device, Vk->CommandPool, NULL);
+    vkDestroyDevice(Device, NULL);
+    vkDestroySurfaceKHR(Vk->Instance, Vk->WindowSurface, NULL);
+    DEBUG_ONLY(
+        g_VkDestroyDebugReportCallbackEXT(Vk->Instance, Vk->DebugReportCallback, NULL);
+    );
+    vkDestroyInstance(Vk->Instance, NULL);
 #else
     VkInstance Instance = Vk->Instance;
     vk_frame_data *Frame = &Vk->FrameData;

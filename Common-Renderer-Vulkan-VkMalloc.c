@@ -334,34 +334,6 @@ void Vkm_Destroy(vkm *Vkm)
     }
 }
 
-void Vkm_Reset(vkm *Vkm)
-{
-    /* deallocate all memory */
-    Vkm_Destroy(Vkm);
-
-    Vkm->DeviceMemory.Count = 0;
-    Vkm->BufferPool.Count = 0;
-    Vkm->ImagePool.Count = 0;
-
-    /* unlink all nodes from pool */
-    for (uint k = 0; k < VK_MAX_MEMORY_TYPES; k++)
-    {
-        vkm_device_memory_node *i = Vkm->DeviceMemoryPoolHead[k];
-        for (; i; i = i->Next)
-        {
-            if (!i->Next)
-                break;
-        }
-        vkm_device_memory_node *End = i;
-        if (End)
-        {
-            End->Next = Vkm->DeviceMemoryNodeFree;
-            Vkm->DeviceMemoryNodeFree = Vkm->DeviceMemoryPoolHead[k];
-        }
-        Vkm->DeviceMemoryPoolHead[k] = NULL;
-    }
-}
-
 
 vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, const vkm_buffer_config *Config)
 {
