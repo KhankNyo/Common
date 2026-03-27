@@ -164,14 +164,14 @@ internal vkm_buffer_chunk *Vkm__CreateChunk(vkm *Vkm, i32 EntryIndex, i32 SizeBy
     return Chunk;
 }
 
-internal void Vkm__UpdateLargest(vkm_buffer_pool_entry *Entry, vkm_buffer_chunk *Largest)
+internal bool32 Vkm__UpdateLargest(vkm_buffer_pool_entry *Entry, vkm_buffer_chunk *Largest)
 {
     if (!Largest)
         Largest = Entry->Freed;
     if (!Entry->Freed)
     {
         Entry->LargestFree = NULL;
-        return;
+        return false;
     }
     vkm_buffer_chunk *Curr = Largest;
     while (Curr)
@@ -181,6 +181,7 @@ internal void Vkm__UpdateLargest(vkm_buffer_pool_entry *Entry, vkm_buffer_chunk 
         Curr = Curr->Next;
     }
     Entry->LargestFree = Largest;
+    return true;
 }
 
 internal void Vkm__UnlinkChunk(vkm_buffer_chunk **Head, vkm_buffer_chunk *Chunk)
@@ -263,13 +264,25 @@ internal vkm_device_memory_node *Vkm__CreateNode(
     return Node;
 }
 
-force_inline bool32 Vkm__IsNodeSuitable(const vkm *Vkm, const vkm_device_memory_node *Node, i64 SizeBytes, u32 Alignment)
+internal void Vkm__UnlinkNode(vkm_device_memory_node **Head, vkm_device_memory_node *Node)
 {
-    i64 NodeRemainBytes = (Vkm->DeviceMemory.Data[Node->MemoryTypeIndex].CapacityAligned - Node->SizeAligned)*VKM_MIN_ALIGNMENT;
-    if (NodeRemainBytes < (i64)Alignment)
+    vkm_device_memory_node *Prev = Node->Prev;
+    vkm_device_memory_node *Next = Node->Next;
+    if (Prev)
+        Prev->Next = Next;
+    else *Head = Next;
+    if (Next)
+        Next->Prev = Prev;
+    Node->Next = NULL;
+    Node->Prev = NULL;
+}
+
+force_inline bool32 Vkm__IsNodeSuitable(const vkm_device_memory_node *Node, i64 SizeBytes, u32 Alignment)
+{
+    i64 SizeRemainBytes = Node->SizeAligned*VKM_MIN_ALIGNMENT;
+    if (SizeRemainBytes < (i64)Alignment)
         return false;
-    i64 Remain = Memory_AlignSize(NodeRemainBytes - Alignment, Alignment);
-    return Remain >= SizeBytes;
+    return SizeBytes <= Memory_AlignSize(SizeRemainBytes, Alignment);
 }
 
 internal vkm_device_memory_node *Vkm__GetFreeNode(vkm *Vkm, VkMemoryRequirements Requirements, VkMemoryPropertyFlags MemoryProperties)
@@ -285,10 +298,8 @@ internal vkm_device_memory_node *Vkm__GetFreeNode(vkm *Vkm, VkMemoryRequirements
     vkm_device_memory_node *FreeNode = *Head;
     {
         /* first fit */
-        vkm_device_memory_node *Prev = NULL;
-        while (FreeNode && !Vkm__IsNodeSuitable(Vkm, FreeNode, Requirements.size, Requirements.alignment))
+        while (FreeNode && !Vkm__IsNodeSuitable(FreeNode, Requirements.size, Requirements.alignment))
         {
-            Prev = FreeNode;
             FreeNode = FreeNode->Next;
         }
 
@@ -321,11 +332,7 @@ internal vkm_device_memory_node *Vkm__GetFreeNode(vkm *Vkm, VkMemoryRequirements
         }
         else
         {
-            /* unlink */
-            if (Prev)
-                Prev->Next = FreeNode->Next;
-            else *Head = FreeNode->Next;
-            FreeNode->Next = NULL;
+            Vkm__UnlinkNode(Head, FreeNode);
         }
     }
     return FreeNode;
@@ -333,16 +340,10 @@ internal vkm_device_memory_node *Vkm__GetFreeNode(vkm *Vkm, VkMemoryRequirements
 
 internal void Vkm__InsertNode(vkm *Vkm, vkm_device_memory_node **Head, vkm_device_memory_node *Node)
 {
-    vkm_device_memory_node *GroupStart = NULL;
     vkm_device_memory_node *Prev = NULL;
-    vkm_device_memory_node *Curr = Node->Next;
-    while (Curr &&
-        (Node->DeviceMemoryIndex > Curr->DeviceMemoryIndex /* sorted by increasing index */
-        || (Node->DeviceMemoryIndex == Curr->DeviceMemoryIndex /* but once indices are equal, sort by increasing offset */
-            && Node->OffsetAligned > Curr->OffsetAligned)))
+    vkm_device_memory_node *Curr = *Head;
+    while (Curr && Node->OffsetAligned < Curr->OffsetAligned) 
     {
-        if (Node->DeviceMemoryIndex == Curr->DeviceMemoryIndex && !GroupStart)
-            GroupStart = Curr;
         Prev = Curr;
         Curr = Curr->Next;
     }
@@ -350,13 +351,16 @@ internal void Vkm__InsertNode(vkm *Vkm, vkm_device_memory_node **Head, vkm_devic
     if (Prev)
         Prev->Next = Node;
     else *Head = Node;
+    Node->Prev = Prev;
     Node->Next = Curr;
+    if (Curr)
+        Curr->Prev = Node;
 
-    for (vkm_device_memory_node *i = GroupStart; i && i->DeviceMemoryIndex == GroupStart->DeviceMemoryIndex && i->Next; i = i->Next)
+    /* coalesce */
+    for (vkm_device_memory_node *i = *Head; i && i->Next; i = i->Next)
     {
         vkm_device_memory_node *Next = i->Next;
         while (i && Next
-            && Next->DeviceMemoryIndex == GroupStart->DeviceMemoryIndex 
             && i->OffsetAligned + i->SizeAligned == Next->OffsetAligned)
         {
             vkm_device_memory_node *Skip = Next;
@@ -377,26 +381,14 @@ internal bool32 Vkm__IsBufferSuitable(
     VkMemoryPropertyFlags MemoryProperties, 
     i64 SizeAligned
 ) {
-    const vkm_device_memory *DeviceMemory = &Vkm->DeviceMemory.Data[Entry->DeviceMemoryIndex];
-    i64 LargestSizeAligned = 0;
-    if (NULL == Entry->LargestFree)
+    if (NULL == Entry->LargestFree && !Vkm__UpdateLargest(Entry, NULL))
     {
-        vkm_buffer_chunk *Largest = NULL;
-        for (vkm_buffer_chunk *i = Entry->Freed; i; i = i->Next)
-        {
-            if (i->SizeAligned > LargestSizeAligned)
-            {
-                Largest = i;
-                LargestSizeAligned = i->SizeAligned;
-            }
-        }
-        Entry->LargestFree = Largest;
+        Vulkan_LogLn("Unsuitable");
+        return false;
     }
-    else
-    {
-        LargestSizeAligned = Entry->LargestFree->SizeAligned;
-    }
+    i64 LargestSizeAligned = Entry->LargestFree->SizeAligned;
 
+    const vkm_device_memory *DeviceMemory = &Vkm->DeviceMemory.Data[Entry->DeviceMemoryIndex];
     bool32 Suitable = 
         Entry->BufferUsageFlags == BufferUsage
         && DeviceMemory->MemoryProperties == MemoryProperties
@@ -409,83 +401,71 @@ force_inline VkDeviceMemory Vkm__GetDeviceMemoryHandle(const vkm *Vkm, const vkm
     return Vkm->DeviceMemory.Data[Node->DeviceMemoryIndex].Handle;
 }
 
-
-
-
-
-void Vkm_Create(vkm *Vkm, arena_alloc *Arena, const vkm_config *Config)
+internal VkImageView Vkm__CreateImageView(vkm *Vkm, VkImage Image, VkFormat Format, VkImageAspectFlags Aspect, int MipLevels)
 {
-    *Vkm = (vkm) { 
-        .Arena = Arena,
-        .Device = Config->Device,
-        .PhysicalDevice = Config->PhysicalDevice,
-        .DeviceMemoryPoolCapacityBytes = Config->DeviceMemoryPoolCapacityBytes,
+    VkImageView ImageView;
+    VkImageViewCreateInfo ImageViewCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = Image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = Format,
+        .components = { /* default mapping, use channel values */
+            .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+        },
+        .subresourceRange = {
+            .aspectMask = Aspect, 
+            .baseMipLevel = 0, 
+            .levelCount = MipLevels,
+            .baseArrayLayer = 0,
+            .layerCount = 1, 
+        },
     };
-    u32 FreeListAlignment = 8;
-    isize FreeListPoolSize = 64*KB;
-    FreeList_Create(&Vkm->FreeList, Arena_AsAllocInterface(Arena), FreeListPoolSize, FreeListAlignment);
+    VK_CHECK(vkCreateImageView(Vkm->Device, &ImageViewCreateInfo, NULL, &ImageView));
+    return ImageView;
 }
 
-void Vkm_Destroy(vkm *Vkm)
+internal vkm_device_memory_node *Vkm__AllocateNode(vkm *Vkm, VkMemoryRequirements Requirements, VkMemoryPropertyFlags MemoryProperties)
 {
-    /* print alloc stats */
-    Vulkan_LogLn("==== vkm alloc stat: %p ====", Vkm);
-    Vulkan_LogLn("    VkDeviceMemory: %d", Vkm->DeviceMemory.Count);
-    for (int i = 0; i < Vkm->DeviceMemory.Count; i++)
+    vkm_device_memory_node *AllocatedNode;
     {
-        vkm_device_memory *Entry = &Vkm->DeviceMemory.Data[i];
-        Vulkan_LogLn("        %d: capacity: %lld KB, type index: %d", i, Entry->CapacityAligned*VKM_MIN_ALIGNMENT/KB, Entry->MemoryTypeIndex);
-    }
-    Vulkan_LogLn("    vkm_buffer (pool):");
-    for (int i = 0; i < Vkm->BufferPool.Count; i++)
-    {
-        Vulkan_LogLn("      alloc buffer %d:", i); 
-        vkm_buffer_chunk *Chunk = Vkm->BufferPool.Data[i].Allocated;
-        while (Chunk)
+        vkm_device_memory_node *FreeNode = Vkm__GetFreeNode(Vkm, Requirements, MemoryProperties);
+
+        /* split image memory */
+        bool32 Splitable = (i64)FreeNode->SizeAligned*VKM_MIN_ALIGNMENT >= (i64)Requirements.size*2;
+        if (Splitable)
         {
-            Vulkan_LogLn("        sz: %gkb, off: %ldb", (double)Chunk->SizeAligned*VKM_MIN_ALIGNMENT/KB, Chunk->OffsetAligned*VKM_MIN_ALIGNMENT);
-            Chunk = Chunk->Next;
+            AllocatedNode = Vkm__CreateNode(Vkm, 
+                Requirements.size, 
+                FreeNode->OffsetAligned*VKM_MIN_ALIGNMENT, 
+                FreeNode->DeviceMemoryIndex, 
+                FreeNode->MemoryTypeIndex
+            );
+            FreeNode->SizeAligned -= AllocatedNode->SizeAligned;
+            FreeNode->OffsetAligned += AllocatedNode->SizeAligned;
+            Vkm__InsertNode(Vkm, &Vkm->DeviceMemoryNodeFree[FreeNode->MemoryTypeIndex], FreeNode);
+            ASSERT(Vkm->DeviceMemoryNodeFree[FreeNode->MemoryTypeIndex], "");
+            Vulkan_LogLn("Node Split: %d KB, %d KB", AllocatedNode->SizeAligned * VKM_MIN_ALIGNMENT/KB, FreeNode->SizeAligned * VKM_MIN_ALIGNMENT/KB);
+        }
+        else
+        {
+            AllocatedNode = FreeNode;
+            Vulkan_LogLn("Node Not Split: %d KB", AllocatedNode->SizeAligned * VKM_MIN_ALIGNMENT/KB);
         }
 
-        Vulkan_LogLn("      free buffer %d:", i); 
-        Chunk = Vkm->BufferPool.Data[i].Freed;
-        while (Chunk)
-        {
-            Vulkan_LogLn("        sz: %fkb", (double)Chunk->SizeAligned*VKM_MIN_ALIGNMENT/KB, Chunk->OffsetAligned*VKM_MIN_ALIGNMENT);
-            Chunk = Chunk->Next;
-        }
-    }
-    Vulkan_LogLn("    vkm_image (pool head, allocated):");
-    for (int i = 0; i < Vkm->ImagePool.Count; i++)
-    {
-        /* TODO: log image allocation  */
-        Vulkan_LogLn("      VkDeviceMemory: %d; size: %lld KB; Offset: %lld Bytes", 
-            i, , i->SizeAligned*VKM_MIN_ALIGNMENT/KB, i->OffsetAligned*VKM_MIN_ALIGNMENT
-        );
-    }
+        /* insert allocated node */
+        vkm_device_memory_node **Head = &Vkm->DeviceMemoryNodeAllocated[AllocatedNode->MemoryTypeIndex];
+        AllocatedNode->Prev = NULL;
+        AllocatedNode->Next = *Head;
+        if (*Head)
+            (*Head)->Prev = AllocatedNode;
 
-
-
-    /* deallocate all memory */
-    dynamic_array_foreach(&Vkm->DeviceMemory, i)
-    {
-        vkFreeMemory(Vkm->Device, i->Handle, NULL);
+        *Head = AllocatedNode;
     }
-
-    /* deallocate all buffers */
-    dynamic_array_foreach(&Vkm->BufferPool, i)
-    {
-        vkDestroyBuffer(Vkm->Device, i->Buffer, NULL);
-    }
-
-    /* deallocate all images */
-    dynamic_array_foreach(&Vkm->ImagePool, i)
-    {
-        vkDestroyImage(Vkm->Device, i->Image, NULL);
-        vkDestroyImageView(Vkm->Device, i->ImageView, NULL);
-    }
+    return AllocatedNode;
 }
-
 
 internal vkm_buffer_handle Vkm__CreateBufferRaw(
     vkm *Vkm, 
@@ -516,8 +496,9 @@ internal vkm_buffer_handle Vkm__CreateBufferRaw(
     }
     if (!SuitableChunk)
     {
+        Vulkan_LogLn("  New buffer", CapacityBytes/MB);
         /* create new buffer pool entry */
-        i64 BufferSize = MAXIMUM(CapacityBytes, Vkm->DeviceMemoryPoolCapacityBytes);
+        i64 BufferSize = MAXIMUM(CapacityBytes, Vkm->BufferPoolCapacityBytes);
 
         VkBuffer Buffer;
         {
@@ -532,15 +513,14 @@ internal vkm_buffer_handle Vkm__CreateBufferRaw(
                 .queueFamilyIndexCount = 0,
                 .pQueueFamilyIndices = NULL, /* NOTE: must be filled when sharingMode is VK_SHARING_MODE_CONCURRENT */
             };
-            vkCreateBuffer(Vkm->Device, &CreateInfo, NULL, &Buffer);
+            VK_CHECK(vkCreateBuffer(Vkm->Device, &CreateInfo, NULL, &Buffer));
         }
 
         VkMemoryRequirements Required = Vkm__GetBufferMemoryRequirements(Vkm, Buffer);
 
-        vkm_device_memory_node *Node = Vkm__GetFreeNode(Vkm, Required, BufferMemoryProperties);
-        Node->Next = Vkm->DeviceMemoryNodeAllocated[Node->MemoryTypeIndex];
-        Vkm->DeviceMemoryNodeAllocated[Node->MemoryTypeIndex] = Node;
-        vkBindBufferMemory(Vkm->Device, Buffer, Vkm__GetDeviceMemoryHandle(Vkm, Node), 0);
+        vkm_device_memory_node *Node = Vkm__AllocateNode(Vkm, Required, BufferMemoryProperties);
+        i64 OffsetBytes = Node->OffsetAligned * VKM_MIN_ALIGNMENT;
+        vkBindBufferMemory(Vkm->Device, Buffer, Vkm__GetDeviceMemoryHandle(Vkm, Node), OffsetBytes);
 
         VkDynamicArray_Push(&Vkm->FreeList, Pool, (vkm_buffer_pool_entry) {
             .Buffer = Buffer,
@@ -557,43 +537,39 @@ internal vkm_buffer_handle Vkm__CreateBufferRaw(
     ASSERT(SuitableChunk);
 
     vkm_buffer_pool_entry *Entry = &Pool->Data[Index];
-    i64 SizeBytes = Memory_AlignSize(CapacityBytes, Entry->Alignment);
-    if (SuitableChunk->SizeAligned*VKM_MIN_ALIGNMENT > SizeBytes*2)
+    CapacityBytes = Memory_AlignSize(CapacityBytes, Entry->Alignment);
     {
-        /* split suitable chunk into free and allocated part */
-        vkm_buffer_chunk *FreeChunk = Vkm__CreateChunk(Vkm, 
-            Index,
-            SuitableChunk->SizeAligned*VKM_MIN_ALIGNMENT - SizeBytes, 
-            SuitableChunk->OffsetAligned*VKM_MIN_ALIGNMENT + SizeBytes
-        );
-        Vkm__InsertFreeChunk(Vkm, Entry, FreeChunk);
-        SuitableChunk->SizeAligned = SizeBytes/VKM_MIN_ALIGNMENT;
-    }
-    else
-    {
-        /* keep chunk */
-        SizeBytes = SuitableChunk->SizeAligned*VKM_MIN_ALIGNMENT;
-    }
+        if (SuitableChunk->SizeAligned*VKM_MIN_ALIGNMENT >= CapacityBytes*2)
+        {
+            /* split suitable chunk into free and allocated part */
+            vkm_buffer_chunk *FreeChunk = Vkm__CreateChunk(Vkm, 
+                Index,
+                SuitableChunk->SizeAligned*VKM_MIN_ALIGNMENT - CapacityBytes, 
+                SuitableChunk->OffsetAligned*VKM_MIN_ALIGNMENT + CapacityBytes
+            );
+            ASSERT(FreeChunk->OffsetAligned != SuitableChunk->OffsetAligned);
+            Vkm__InsertFreeChunk(Vkm, Entry, FreeChunk);
+            SuitableChunk->SizeAligned = CapacityBytes/VKM_MIN_ALIGNMENT;
+            Vulkan_LogLn("  Splitting chunk");
+        }
+        else
+        {
+            /* keep chunk */
+            CapacityBytes = SuitableChunk->SizeAligned*VKM_MIN_ALIGNMENT;
+            Vulkan_LogLn("  Keeping chunk");
+        }
 
-    /* update allocated list */
-    if (Entry->Allocated)
-        Entry->Allocated->Prev = SuitableChunk;
-    SuitableChunk->Prev = NULL;
-    SuitableChunk->Next = Entry->Allocated;
-    Entry->Allocated = SuitableChunk;
+        /* update allocated list */
+        if (Entry->Allocated)
+            Entry->Allocated->Prev = SuitableChunk;
+        SuitableChunk->Prev = NULL;
+        SuitableChunk->Next = Entry->Allocated;
+        Entry->Allocated = SuitableChunk;
+    }
     vkm_buffer_handle Handle = { 
         .Value = SuitableChunk,
     };
     return Handle;
-}
-
-vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, const vkm_buffer_config *Config)
-{
-    ASSERT(Config->BufferType, "BufferType cannot be 0");
-    ASSERT(Config->MemoryCapacityBytes, "MemoryCapacityBytes cannot be 0");
-    VkBufferUsageFlags BufferUsage = Vkm__GetBufferUsageFlags(Config->BufferType);
-    VkMemoryPropertyFlags BufferMemoryProperties = Vkm__GetBufferMemoryPropertyFlags(Config->BufferType);
-    return Vkm__CreateBufferRaw(Vkm, BufferUsage, BufferMemoryProperties, Config->MemoryCapacityBytes);
 }
 
 
@@ -628,58 +604,119 @@ internal VkImage Vkm__CreateVkImage(
     return Image;
 }
 
-internal VkImageView Vkm__CreateImageView(vkm *Vkm, VkImage Image, VkFormat Format, VkImageAspectFlags Aspect, int MipLevels)
+
+
+
+
+void Vkm_Create(vkm *Vkm, arena_alloc *Arena, const vkm_config *Config)
 {
-    VkImageView ImageView;
-    VkImageViewCreateInfo ImageViewCreateInfo = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = Image,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = Format,
-        .components = { /* default mapping, use channel values */
-            .r = VK_COMPONENT_SWIZZLE_IDENTITY,
-            .g = VK_COMPONENT_SWIZZLE_IDENTITY,
-            .b = VK_COMPONENT_SWIZZLE_IDENTITY,
-            .a = VK_COMPONENT_SWIZZLE_IDENTITY,
-        },
-        .subresourceRange = {
-            .aspectMask = Aspect, 
-            .baseMipLevel = 0, 
-            .levelCount = MipLevels,
-            .baseArrayLayer = 0,
-            .layerCount = 1, 
-        },
+    *Vkm = (vkm) { 
+        .Arena = Arena,
+        .Device = Config->Device,
+        .PhysicalDevice = Config->PhysicalDevice,
+        .DeviceMemoryPoolCapacityBytes = Config->DeviceMemoryPoolCapacityBytes,
+        .BufferPoolCapacityBytes = Config->BufferPoolCapacityBytes,
     };
-    VK_CHECK(vkCreateImageView(Vkm->Device, &ImageViewCreateInfo, NULL, &ImageView));
-    return ImageView;
+    u32 FreeListAlignment = 8;
+    isize FreeListPoolSize = 64*KB;
+    FreeList_Create(&Vkm->FreeList, Arena_AsAllocInterface(Arena), FreeListPoolSize, FreeListAlignment);
 }
 
-internal vkm_device_memory_node *Vkm__AllocateNodeForImage(vkm *Vkm, VkMemoryRequirements Requirements)
+void Vkm_Destroy(vkm *Vkm)
 {
-    vkm_device_memory_node *AllocatedNode;
+    /* print alloc stats */
+    Vulkan_LogLn("==== vkm alloc stat: %p ====", Vkm);
+    Vulkan_LogLn("    VkDeviceMemory: %d", Vkm->DeviceMemory.Count);
+    for (int i = 0; i < Vkm->DeviceMemory.Count; i++)
     {
-        vkm_device_memory_node *FreeNode = Vkm__GetFreeNode(Vkm, Requirements, VKM_IMAGE_MEMORY_PROPERTY);
-
-        /* split image memory */
-        bool32 Splitable = (i64)FreeNode->SizeAligned*VKM_MIN_ALIGNMENT >= (i64)Requirements.size*2;
-        if (Splitable)
+        vkm_device_memory *Entry = &Vkm->DeviceMemory.Data[i];
+        Vulkan_LogLn("        %d: capacity: %lld KB, type index: %d", i, Entry->CapacityAligned*VKM_MIN_ALIGNMENT/KB, Entry->MemoryTypeIndex);
+    }
+    for (uint k = 0; k < VK_MAX_MEMORY_TYPES; k++)
+    {
+        if (!Vkm->DeviceMemoryNodeAllocated[k] && !Vkm->DeviceMemoryNodeFree[k])
         {
-            AllocatedNode = Vkm__CreateNode(Vkm, 
-                Requirements.size, 
-                FreeNode->OffsetAligned*VKM_MIN_ALIGNMENT, 
-                FreeNode->DeviceMemoryIndex, 
-                FreeNode->MemoryTypeIndex
-            );
-            FreeNode->SizeAligned -= AllocatedNode->SizeAligned;
-            FreeNode->OffsetAligned += AllocatedNode->SizeAligned;
-            Vkm__InsertNode(Vkm, Vkm->DeviceMemoryNodeFree, FreeNode);
+            continue;
         }
-        else
+
+        Vulkan_LogLn("    AllocNode %d: ", k);
+        for (vkm_device_memory_node *i = Vkm->DeviceMemoryNodeAllocated[k]; i; i = i->Next)
         {
-            AllocatedNode = FreeNode;
+            Vulkan_LogLn("      size, offset, idx: %ld KB, %ld Bytes, %d", i->SizeAligned * VKM_MIN_ALIGNMENT/KB, i->OffsetAligned*VKM_MIN_ALIGNMENT, i->DeviceMemoryIndex);
+        }
+        Vulkan_LogLn("    FreeNode %d: ", k);
+        for (vkm_device_memory_node *i = Vkm->DeviceMemoryNodeFree[k]; i; i = i->Next)
+        {
+            Vulkan_LogLn("      size, offset, idx: %ld KB, %ld Bytes, %d", i->SizeAligned * VKM_MIN_ALIGNMENT/KB, i->OffsetAligned*VKM_MIN_ALIGNMENT, i->DeviceMemoryIndex);
         }
     }
-    return AllocatedNode;
+    Vulkan_LogLn("    vkm_buffer (pool): %d", (int)Vkm->BufferPool.Count);
+    for (int i = 0; i < Vkm->BufferPool.Count; i++)
+    {
+        vkm_buffer_pool_entry *Entry = Vkm->BufferPool.Data + i;
+        isize LargestFree = Vkm__UpdateLargest(Entry, Entry->LargestFree)
+            ? Entry->LargestFree->SizeAligned * VKM_MIN_ALIGNMENT
+            : 0;
+
+        Vulkan_LogLn("      Group %d: VkDeviceMemory %d, largest: %ld KB", i, Entry->DeviceMemoryIndex, LargestFree / KB);
+        Vulkan_LogLn("        alloced:"); 
+        vkm_buffer_chunk *Chunk = Entry->Allocated;
+        while (Chunk)
+        {
+            Vulkan_LogLn("          size: %g KB, offset: %ld Bytes", (double)Chunk->SizeAligned*VKM_MIN_ALIGNMENT/KB, Chunk->OffsetAligned*VKM_MIN_ALIGNMENT);
+            Chunk = Chunk->Next;
+        }
+
+        Vulkan_LogLn("        freed :", i); 
+        Chunk = Vkm->BufferPool.Data[i].Freed;
+        while (Chunk)
+        {
+            Vulkan_LogLn("          size: %g KB, offset: %ld Bytes", (double)Chunk->SizeAligned*VKM_MIN_ALIGNMENT/KB, Chunk->OffsetAligned*VKM_MIN_ALIGNMENT);
+            Chunk = Chunk->Next;
+        }
+    }
+    Vulkan_LogLn("    vkm_image (pool head, allocated):");
+    for (int i = 0; i < Vkm->ImagePool.Count; i++)
+    {
+        vkm_image_pool_entry *Entry = Vkm->ImagePool.Data + i;
+        /* TODO: log image allocation  */
+        Vulkan_LogLn("      VkDeviceMemory: %d; size: %lld KB; Offset: %lld Bytes, w: %d, h: %d", 
+            i, 
+            Entry->DeviceMemoryNode->SizeAligned * VKM_MIN_ALIGNMENT/KB,
+            Entry->DeviceMemoryNode->OffsetAligned * VKM_MIN_ALIGNMENT,
+            Entry->Width, Entry->Height
+        );
+    }
+
+
+
+    /* deallocate all memory */
+    dynamic_array_foreach(&Vkm->DeviceMemory, i)
+    {
+        vkFreeMemory(Vkm->Device, i->Handle, NULL);
+    }
+
+    /* deallocate all buffers */
+    dynamic_array_foreach(&Vkm->BufferPool, i)
+    {
+        vkDestroyBuffer(Vkm->Device, i->Buffer, NULL);
+    }
+
+    /* deallocate all images */
+    dynamic_array_foreach(&Vkm->ImagePool, i)
+    {
+        vkDestroyImage(Vkm->Device, i->Image, NULL);
+        vkDestroyImageView(Vkm->Device, i->ImageView, NULL);
+    }
+}
+
+vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, const vkm_buffer_config *Config)
+{
+    ASSERT(Config->BufferType, "BufferType cannot be 0");
+    ASSERT(Config->MemoryCapacityBytes, "MemoryCapacityBytes cannot be 0");
+    VkBufferUsageFlags BufferUsage = Vkm__GetBufferUsageFlags(Config->BufferType);
+    VkMemoryPropertyFlags BufferMemoryProperties = Vkm__GetBufferMemoryPropertyFlags(Config->BufferType);
+    return Vkm__CreateBufferRaw(Vkm, BufferUsage, BufferMemoryProperties, Config->MemoryCapacityBytes);
 }
 
 vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config)
@@ -708,8 +745,8 @@ vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config)
     }
 
     /* get allocated node */
-    vkm_device_memory_node *AllocatedNode = Vkm__AllocateNodeForImage(Vkm, Required);
-    i64 OffsetBytes = AllocatedNode->OffsetAligned;
+    vkm_device_memory_node *AllocatedNode = Vkm__AllocateNode(Vkm, Required, VKM_IMAGE_MEMORY_PROPERTY);
+    i64 OffsetBytes = AllocatedNode->OffsetAligned * VKM_MIN_ALIGNMENT;
     vkBindImageMemory(Vkm->Device, Image, Vkm__GetDeviceMemoryHandle(Vkm, AllocatedNode), OffsetBytes);
 
     VkImageView ImageView = Vkm__CreateImageView(Vkm, 
@@ -797,7 +834,7 @@ vkm_image_handle Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 New
         /* create new device memory */
         Required.size *= 2;
         ASSERT(Required.size < (u64)INT32_MAX*VKM_MIN_ALIGNMENT);
-        vkm_device_memory_node *NewNode = Vkm__AllocateNodeForImage(Vkm, Required);
+        vkm_device_memory_node *NewNode = Vkm__AllocateNode(Vkm, Required, VKM_IMAGE_MEMORY_PROPERTY);
         i64 OffsetBytes = NewNode->OffsetAligned * VKM_MIN_ALIGNMENT;
         vkBindImageMemory(Vkm->Device, NewImage, Vkm__GetDeviceMemoryHandle(Vkm, NewNode), OffsetBytes);
 

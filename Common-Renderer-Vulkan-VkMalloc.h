@@ -70,7 +70,7 @@ struct vkm_device_memory
 };
 struct vkm_device_memory_node
 {
-    vkm_device_memory_node *Next;
+    vkm_device_memory_node *Next, *Prev;
     i32 SizeAligned;
     i32 OffsetAligned;
     i16 DeviceMemoryIndex;
@@ -118,6 +118,7 @@ struct vkm_config
     VkDevice Device;
     VkPhysicalDevice PhysicalDevice;
     i64 DeviceMemoryPoolCapacityBytes;
+    i64 BufferPoolCapacityBytes;
 };
 struct vkm
 {
@@ -126,6 +127,7 @@ struct vkm
     VkDevice Device;
     VkPhysicalDevice PhysicalDevice;
     i64 DeviceMemoryPoolCapacityBytes;
+    i64 BufferPoolCapacityBytes;
 
     dynamic_array(vkm_device_memory) DeviceMemory;
     dynamic_array(VkImageView) SeparateImageViews;

@@ -2555,6 +2555,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
             .Device = Device,
             .PhysicalDevice = GpuContext->PhysicalDevice,
             .DeviceMemoryPoolCapacityBytes = 64*MB,
+            .BufferPoolCapacityBytes = 2*MB,
         };
         Vkm_Create(
             &GpuContext->VkMalloc, 
@@ -2564,7 +2565,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
 
         vkm_buffer_config StagingBufferConfig = {
             .BufferType = VKM_BUFFER_TYPE_STAGING,
-            .MemoryCapacityBytes = 8*MB,
+            .MemoryCapacityBytes = 1*MB,
         };
         GpuContext->StagingBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, &StagingBufferConfig);
         GpuContext->StagingBufferPtr = Vkm_MapBufferMemory(&GpuContext->VkMalloc, GpuContext->StagingBuffer);
@@ -2593,7 +2594,8 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
     {
         renderer_resource_group_config ResourceConfig = { 
             .CpuBufferPoolSizeBytes = 2*MB,
-            .GpuBufferPoolSizeBytes = 256*MB,
+            .GpuMemoryPoolSizeBytes = 256*MB,
+            .GpuBufferPoolSizeBytes = 32*MB,
 
             .UniformBufferBinding = 0,
             .UniformBufferSizeBytes = 1, /* TODO: put a useful uniform buffer here */
@@ -2741,14 +2743,24 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
 {
     VkDevice Device = Vulkan_GetDevice(Vk);
 
+    isize GpuMemoryPoolSizeBytes = Config->GpuMemoryPoolSizeBytes
+        ? Config->GpuMemoryPoolSizeBytes : RENDERER_DEFAULT_GPU_MEMORY_POOL_SIZE;
+    isize GpuBufferPoolSizeBytes = Config->GpuBufferPoolSizeBytes
+        ? Config->GpuBufferPoolSizeBytes : RENDERER_DEFAULT_GPU_BUFFER_POOL_SIZE;
+    isize CpuBufferPoolSizeBytes = Config->CpuBufferPoolSizeBytes
+        ? Config->CpuBufferPoolSizeBytes : RENDERER_DEFAULT_CPU_BUFFER_POOL_SIZE;
+    isize UniformBufferSizeBytes = Config->UniformBufferSizeBytes
+        ? Config->UniformBufferSizeBytes : RENDERER_DEFAULT_UNIFORM_BUFFER_SIZE;
+
     /* allocators */
     {
+
         int Alignment = 8;
-        Arena_Create(&ResourceGroup->CpuArena, Vk->Arena.UserAlloc, Config->CpuBufferPoolSizeBytes, Alignment);
+        Arena_Create(&ResourceGroup->CpuArena, Vk->Arena.UserAlloc, CpuBufferPoolSizeBytes, Alignment);
         FreeList_Create(
             &ResourceGroup->CpuAllocator, 
             Arena_AsAllocInterface(&ResourceGroup->CpuArena), 
-            Config->CpuBufferPoolSizeBytes/2, 
+            CpuBufferPoolSizeBytes/2,
             Alignment
         );
 
@@ -2758,7 +2770,8 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
             &(vkm_config) {
                 .Device = Device,
                 .PhysicalDevice = Vulkan_GetPhysicalDevice(Vk),
-                .DeviceMemoryPoolCapacityBytes = Config->GpuBufferPoolSizeBytes,
+                .DeviceMemoryPoolCapacityBytes = GpuMemoryPoolSizeBytes,
+                .BufferPoolCapacityBytes = GpuBufferPoolSizeBytes,
             }
         );
     }
@@ -2776,8 +2789,8 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
     {
         FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBuffers, Vk->FramesInFlight);
         FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBuffersMapped, Vk->FramesInFlight);
-        FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBufferTmp, Config->UniformBufferSizeBytes);
-        ResourceGroup->UniformBufferTmpCapacity = Config->UniformBufferSizeBytes;
+        FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBufferTmp, UniformBufferSizeBytes);
+        ResourceGroup->UniformBufferTmpCapacity = UniformBufferSizeBytes;
         for (int i = 0; i < Vk->FramesInFlight; i++)
         {
             ResourceGroup->UniformBuffers[i] = Vkm_CreateBuffer(

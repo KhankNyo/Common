@@ -250,12 +250,17 @@ typedef enum
     RENDERER_FILTER_LINEAR = 1,
 } renderer_filter_type;
 
+#define RENDERER_DEFAULT_GPU_MEMORY_POOL_SIZE (1*MB)
+#define RENDERER_DEFAULT_GPU_BUFFER_POOL_SIZE (512*KB)
+#define RENDERER_DEFAULT_CPU_BUFFER_POOL_SIZE (512*KB)
+#define RENDERER_DEFAULT_UNIFORM_BUFFER_SIZE (16*KB)
 
 struct renderer_resource_group_config 
 {
-    isize GpuBufferPoolSizeBytes;
-    isize CpuBufferPoolSizeBytes;
-    isize UniformBufferSizeBytes;
+    isize GpuMemoryPoolSizeBytes; /* general memory pool (for both textures and buffers), will default to 1MB if 0 is provided */
+    isize GpuBufferPoolSizeBytes; /* pool for buffers (ubo, vbo, ebo, ssbo), will default to 512KB if 0 is provided */
+    isize CpuBufferPoolSizeBytes; /* pool for resources managed by the cpu (handles, mesh data, etc), will default to 512KB if 0 is provided */
+    isize UniformBufferSizeBytes; /* will default to 16KB if 0 is provided */
 
     u32 UniformBufferBinding;   /* must match in shader */
     u32 TextureArrayBinding;    /* must match in shader */
