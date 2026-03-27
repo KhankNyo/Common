@@ -301,7 +301,13 @@ internal vkm_device_memory_node *Vkm__GetFreeNode(vkm *Vkm, VkMemoryRequirements
         if (!FreeNode)
         {
             /* allocate new one */
-            i64 CapacityBytes = MAXIMUM(Vkm->DeviceMemoryPoolCapacityBytes, (i64)Requirements.size);
+            i64 PoolCapacity = Vkm->LocalDeviceMemoryPoolCapacityBytes;
+            if (MemoryProperties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+            {
+                PoolCapacity = Vkm->TransDeviceMemoryPoolCapacityBytes;
+            }
+
+            i64 CapacityBytes = MAXIMUM(PoolCapacity, (i64)Requirements.size);
             ASSERT(CapacityBytes <= ((i64)INT32_MAX) * VKM_MIN_ALIGNMENT, "memory size too big");
 
             VkDeviceMemory DeviceMemory;
@@ -421,16 +427,20 @@ internal VkImageView Vkm__CreateImageView(vkm *Vkm, VkImage Image, VkFormat Form
     return ImageView;
 }
 
+force_inline bool32 Vkm__ShouldSplitMemory(const vkm *Vkm, i64 MemorySizeAligned, i64 AllocationSizeBytes)
+{
+    return MemorySizeAligned*VKM_MIN_ALIGNMENT >= AllocationSizeBytes + Vkm->BufferPoolCapacityBytes;
+}
+
 internal vkm_device_memory_node *Vkm__AllocateNode(vkm *Vkm, VkMemoryRequirements Requirements, VkMemoryPropertyFlags MemoryProperties)
 {
     vkm_device_memory_node *AllocatedNode;
     {
         vkm_device_memory_node *FreeNode = Vkm__GetFreeNode(Vkm, Requirements, MemoryProperties);
 
-        /* split image memory */
-        bool32 Splitable = (i64)FreeNode->SizeAligned*VKM_MIN_ALIGNMENT >= (i64)Requirements.size*2;
-        if (Splitable)
+        if (Vkm__ShouldSplitMemory(Vkm, FreeNode->SizeAligned, Requirements.size))
         {
+            /* split image memory */
             AllocatedNode = Vkm__CreateNode(Vkm, 
                 Requirements.size, 
                 FreeNode->OffsetAligned*VKM_MIN_ALIGNMENT, 
@@ -487,10 +497,9 @@ internal vkm_buffer_handle Vkm__CreateBufferRaw(
     if (!SuitableChunk)
     {
         /* create new buffer pool entry */
-        i64 BufferSize = MAXIMUM(CapacityBytes, Vkm->BufferPoolCapacityBytes);
-
         VkBuffer Buffer;
         {
+            i64 BufferSize = MAXIMUM(CapacityBytes, Vkm->BufferPoolCapacityBytes);
             VkBufferCreateInfo CreateInfo = {
                 .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                 .usage = BufferUsage,
@@ -506,10 +515,9 @@ internal vkm_buffer_handle Vkm__CreateBufferRaw(
         }
 
         VkMemoryRequirements Required = Vkm__GetBufferMemoryRequirements(Vkm, Buffer);
-
         vkm_device_memory_node *Node = Vkm__AllocateNode(Vkm, Required, BufferMemoryProperties);
-        i64 OffsetBytes = Node->OffsetAligned * VKM_MIN_ALIGNMENT;
-        vkBindBufferMemory(Vkm->Device, Buffer, Vkm__GetDeviceMemoryHandle(Vkm, Node), OffsetBytes);
+        i64 DeviceMemoryOffsetBytes = Node->OffsetAligned * VKM_MIN_ALIGNMENT;
+        vkBindBufferMemory(Vkm->Device, Buffer, Vkm__GetDeviceMemoryHandle(Vkm, Node), DeviceMemoryOffsetBytes);
 
         VkDynamicArray_Push(&Vkm->FreeList, Pool, (vkm_buffer_pool_entry) {
             .Buffer = Buffer,
@@ -517,9 +525,12 @@ internal vkm_buffer_handle Vkm__CreateBufferRaw(
             .Alignment = Required.alignment,
             .DeviceMemoryIndex = Node->DeviceMemoryIndex,
             .DeviceMemoryNode = Node,
+            .DeviceMemoryOffsetBytes = DeviceMemoryOffsetBytes,
+            .DeviceMemoryCapacityBytes = Required.size,
         });
         Index = Pool->Count - 1;
-        SuitableChunk = Vkm__CreateChunk(Vkm, Index, Required.size, 0);
+        i64 BufferOffsetBytes = 0;
+        SuitableChunk = Vkm__CreateChunk(Vkm, Index, Required.size, BufferOffsetBytes);
     }
 
     ASSERT(IN_RANGE(0, Index, Pool->Count - 1));
@@ -528,7 +539,7 @@ internal vkm_buffer_handle Vkm__CreateBufferRaw(
     vkm_buffer_pool_entry *Entry = &Pool->Data[Index];
     CapacityBytes = Memory_AlignSize(CapacityBytes, Entry->Alignment);
     {
-        if (SuitableChunk->SizeAligned*VKM_MIN_ALIGNMENT >= CapacityBytes*2)
+        if (Vkm__ShouldSplitMemory(Vkm, SuitableChunk->SizeAligned, CapacityBytes))
         {
             /* split suitable chunk into free and allocated part */
             vkm_buffer_chunk *FreeChunk = Vkm__CreateChunk(Vkm, 
@@ -651,11 +662,12 @@ internal void Vkm__PrintAllocStats(const vkm *Vkm)
     {
         const vkm_image_pool_entry *Entry = Vkm->ImagePool.Data + i;
         /* TODO: log image allocation  */
-        Vulkan_LogLn("      VkDeviceMemory: %d; size: %lld KB; Offset: %lld Bytes, w: %d, h: %d", 
+        Vulkan_LogLn("      %d: size: %lld KB; Offset: %lld Bytes; w: %d, h: %d; VkDeviceMemory index: %d", 
             i, 
             Entry->DeviceMemoryNode->SizeAligned * VKM_MIN_ALIGNMENT/KB,
             Entry->DeviceMemoryNode->OffsetAligned * VKM_MIN_ALIGNMENT,
-            Entry->Width, Entry->Height
+            Entry->Width, Entry->Height,
+            Entry->DeviceMemoryIndex
         );
     }
 }
@@ -667,11 +679,12 @@ void Vkm_Create(vkm *Vkm, arena_alloc *Arena, const vkm_config *Config)
         .Arena = Arena,
         .Device = Config->Device,
         .PhysicalDevice = Config->PhysicalDevice,
-        .DeviceMemoryPoolCapacityBytes = Config->DeviceMemoryPoolCapacityBytes,
+        .LocalDeviceMemoryPoolCapacityBytes = Config->LocalDeviceMemoryPoolCapacityBytes,
+        .TransDeviceMemoryPoolCapacityBytes = Config->TransDeviceMemoryPoolCapacityBytes,
         .BufferPoolCapacityBytes = Config->BufferPoolCapacityBytes,
     };
     u32 FreeListAlignment = 8;
-    isize FreeListPoolSize = 64*KB;
+    isize FreeListPoolSize = 32*KB;
     FreeList_Create(&Vkm->FreeList, Arena_AsAllocInterface(Arena), FreeListPoolSize, FreeListAlignment);
 }
 
@@ -778,18 +791,17 @@ vkm_buffer_handle Vkm_ResizeBuffer(vkm *Vkm, vkm_buffer_handle BufferHandle, i64
     if (NewSizeBytes > Chunk->SizeAligned*VKM_MIN_ALIGNMENT)
     {
         vkm_buffer_pool_entry *Entry = &Vkm->BufferPool.Data[Chunk->EntryIndex];
+        vkm_device_memory *DeviceMemory = &Vkm->DeviceMemory.Data[Entry->DeviceMemoryIndex];
         NewSizeBytes = MAXIMUM(NewSizeBytes, Chunk->SizeAligned*VKM_MIN_ALIGNMENT*2);
         NewSizeBytes = Memory_AlignSize(NewSizeBytes, Entry->Alignment);
-
 
         Vkm__UnlinkChunk(&Entry->Allocated, Chunk);
         Vkm__InsertFreeChunk(Vkm, Entry, Chunk);
         BufferHandle = Vkm__CreateBufferRaw(Vkm, 
             Entry->BufferUsageFlags, 
-            Vkm->DeviceMemory.Data[Entry->DeviceMemoryIndex].MemoryProperties,
+            DeviceMemory->MemoryProperties,
             NewSizeBytes
         );
-        UNREACHABLE();
     }
     return BufferHandle;
 }
@@ -852,16 +864,22 @@ void *Vkm_MapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle)
     vkm_buffer_chunk *Chunk = (BufferHandle.Value);
     ASSERT(IN_RANGE(0, Chunk->EntryIndex, Vkm->BufferPool.Count - 1), "Invalid handle");
 
-    vkm_device_memory *DeviceMemory = &Vkm->DeviceMemory.Data[Chunk->EntryIndex];
+    vkm_buffer_pool_entry *Entry = Vkm->BufferPool.Data + Chunk->EntryIndex;
+    vkm_device_memory *DeviceMemory = Vkm->DeviceMemory.Data + Entry->DeviceMemoryIndex;
     if (DeviceMemory->MapCount == 0)
     {
-        void *Ptr;
-        vkMapMemory(Vkm->Device, DeviceMemory->Handle, 0, DeviceMemory->CapacityAligned*VKM_MIN_ALIGNMENT, 0, &Ptr);
-        DeviceMemory->MappedMemory = Ptr;
+        /* NOTE: map the entire VkBuffer to a region in VkDeviceMemory */
+        vkMapMemory(Vkm->Device, 
+            DeviceMemory->Handle, 
+            Entry->DeviceMemoryOffsetBytes, 
+            Entry->DeviceMemoryCapacityBytes, 
+            0, 
+            &DeviceMemory->MappedMemory
+        );
     }
     ASSERT(DeviceMemory->MappedMemory);
     DeviceMemory->MapCount++;
-    return (u8 *)DeviceMemory->MappedMemory + Chunk->OffsetAligned;
+    return (u8 *)DeviceMemory->MappedMemory + Entry->DeviceMemoryOffsetBytes + Chunk->OffsetAligned * VKM_MIN_ALIGNMENT;
 }
 
 void Vkm_UnmapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle, void *MappedMemory)
@@ -870,7 +888,8 @@ void Vkm_UnmapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle, void *Mappe
     vkm_buffer_chunk *Chunk = BufferHandle.Value;
     ASSERT(IN_RANGE(0, Chunk->EntryIndex, Vkm->BufferPool.Count - 1), "Invalid handle");
 
-    vkm_device_memory *DeviceMemory = &Vkm->DeviceMemory.Data[Chunk->EntryIndex];
+    vkm_buffer_pool_entry *Entry = Vkm->BufferPool.Data + Chunk->EntryIndex;
+    vkm_device_memory *DeviceMemory = Vkm->DeviceMemory.Data + Entry->DeviceMemoryIndex;
     DeviceMemory->MapCount -= (DeviceMemory->MapCount != 0);
     if (DeviceMemory->MapCount == 0)
     {

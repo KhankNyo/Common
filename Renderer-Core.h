@@ -162,7 +162,6 @@ struct renderer_draw_pipeline
             Renderer_Destroy();
  */
 
-renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 ForceTripleBuffering, profiler *Profiler);
 void Renderer_Destroy(renderer_handle Renderer);
 bool32 Renderer_IsMSAASampleCountSupported(renderer_handle Renderer, int SampleCount);
 
@@ -174,6 +173,7 @@ bool32 Renderer_IsMSAASampleCountSupported(renderer_handle Renderer, int SampleC
 /* uploads a texture on the gpu,
  * must be called between Renderer_Init() and Renderer_CreateGraphicsPipelines() */
 #if !defined(NEW_API)
+renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 ForceTripleBuffering, profiler *Profiler);
 renderer_texture_handle Renderer_UploadTexture(
     renderer_handle Renderer, 
     const void *Image, u32 Width, u32 Height, u32 MipLevels,
@@ -250,17 +250,19 @@ typedef enum
     RENDERER_FILTER_LINEAR = 1,
 } renderer_filter_type;
 
-#define RENDERER_DEFAULT_GPU_MEMORY_POOL_SIZE (1*MB)
+#define RENDERER_DEFAULT_GPU_LOCAL_MEMORY_POOL_SIZE (1*MB)
+#define RENDERER_DEFAULT_GPU_CPU_MEMORY_POOL_SIZE (512*KB)
 #define RENDERER_DEFAULT_GPU_BUFFER_POOL_SIZE (512*KB)
 #define RENDERER_DEFAULT_CPU_BUFFER_POOL_SIZE (512*KB)
 #define RENDERER_DEFAULT_UNIFORM_BUFFER_SIZE (16*KB)
 
 struct renderer_resource_group_config 
 {
-    isize GpuMemoryPoolSizeBytes; /* general memory pool (for both textures and buffers), will default to 1MB if 0 is provided */
-    isize GpuBufferPoolSizeBytes; /* pool for buffers (ubo, vbo, ebo, ssbo), will default to 512KB if 0 is provided */
-    isize CpuBufferPoolSizeBytes; /* pool for resources managed by the cpu (handles, mesh data, etc), will default to 512KB if 0 is provided */
-    isize UniformBufferSizeBytes; /* will default to 16KB if 0 is provided */
+    isize GpuLocalMemoryPoolSizeBytes;  /* pool size of gpu local memory, will default to 1MB if 0 was given */
+    isize GpuCpuMemoryPoolSizeBytes;    /* pool size of gpu-cpu memory, will default to 512KB if 0 was given */
+    isize GpuBufferPoolSizeBytes;       /* pool for gpu buffers (ubo, vbo, ebo, ssbo), will default to 512KB if 0 was given */
+    isize CpuBufferPoolSizeBytes;       /* pool for resources managed by the cpu (handles, mesh data, etc), will default to 512KB if 0 was given */
+    isize UniformBufferSizeBytes;       /* will default to 16KB if 0 was given */
 
     u32 UniformBufferBinding;   /* must match in shader */
     u32 TextureArrayBinding;    /* must match in shader */
@@ -288,6 +290,15 @@ struct renderer_mesh_config
     isize IndexCount;
 };
 
+struct renderer_config
+{
+    profiler *Profiler; /* can be NULL */
+    bool32 ForceTripleBuffering;
+    int FramesInFlight;
+};
+
+
+renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 ForceTripleBuffering, profiler *Profiler);
 
 
 renderer_resource_group_handle Renderer_CreateResourceGroup(

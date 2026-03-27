@@ -1375,7 +1375,7 @@ internal vk_render_target Vulkan_CreateRenderTarget(
     vk_swapchain *Swapchain, 
     VkSampleCountFlagBits SampleCount
 ) {
-    platform_window_dimensions Monitor = Platform_Get(WindowDimensions);
+    platform_window_dimensions Monitor = Platform_Get(MonitorDimensions);
     VkDevice Device = GpuContext->Device;
 
     vkm_image_handle MSAABuffer;
@@ -2549,33 +2549,6 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
         GpuContext->Profiler = Profiler;
     }
 
-    /* initialize custom memory allocator */
-    {
-        vkm_config VkmConfig = {
-            .Device = Device,
-            .PhysicalDevice = GpuContext->PhysicalDevice,
-            .DeviceMemoryPoolCapacityBytes = 64*MB,
-            .BufferPoolCapacityBytes = 2*MB,
-        };
-        Vkm_Create(
-            &GpuContext->VkMalloc, 
-            Arena,
-            &VkmConfig
-        );
-
-        vkm_buffer_config StagingBufferConfig = {
-            .BufferType = VKM_BUFFER_TYPE_STAGING,
-            .MemoryCapacityBytes = 1*MB,
-        };
-        GpuContext->StagingBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, &StagingBufferConfig);
-        GpuContext->StagingBufferPtr = Vkm_MapBufferMemory(&GpuContext->VkMalloc, GpuContext->StagingBuffer);
-        Vkm_CreateBuffer(&GpuContext->VkMalloc, &StagingBufferConfig);
-        Vkm_CreateBuffer(&GpuContext->VkMalloc, &StagingBufferConfig);
-        Vkm_CreateBuffer(&GpuContext->VkMalloc, &StagingBufferConfig);
-        Vkm_CreateBuffer(&GpuContext->VkMalloc, &StagingBufferConfig);
-    }
-
-
     /* NOTE: command pool must be created before attempting to load resources onto the gpu */
     Vk->CommandPool = Vulkan_CreateCommandPool(GpuContext);
 
@@ -2594,8 +2567,9 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
     {
         renderer_resource_group_config ResourceConfig = { 
             .CpuBufferPoolSizeBytes = 1*MB,
-            .GpuMemoryPoolSizeBytes = 64*MB,
-            .GpuBufferPoolSizeBytes = 8*MB,
+            .GpuCpuMemoryPoolSizeBytes = 8*MB,
+            .GpuLocalMemoryPoolSizeBytes = 128*MB,
+            .GpuBufferPoolSizeBytes = 1*MB,
 
             .UniformBufferBinding = 0,
             .UniformBufferSizeBytes = 1, /* TODO: put a useful uniform buffer here */
@@ -2738,13 +2712,38 @@ internal u32 Vulkan_ResourceGroup_PushGraphicsPipeline(vk_resource_group *Resour
     return Index;
 }
 
+internal void Vulkan_ResourceGroup_ResizeStagingBuffer(vk_resource_group *ResourceGroup, isize SizeBytes)
+{
+    if (SizeBytes > ResourceGroup->StagingBufferInfo.CapacityBytes)
+    {
+        if (ResourceGroup->StagingBufferInfo.CapacityBytes == 0)
+        {
+            ResourceGroup->StagingBuffer = Vkm_CreateBuffer(
+                &ResourceGroup->GpuAllocator, 
+                &(vkm_buffer_config) {
+                    .BufferType = VKM_BUFFER_TYPE_STAGING,
+                    .MemoryCapacityBytes = SizeBytes,
+                }
+            );
+        }
+        else
+        {
+            Vkm_UnmapBufferMemory(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer, ResourceGroup->StagingBufferMapped);
+            ResourceGroup->StagingBuffer = Vkm_ResizeBuffer(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer, SizeBytes);
+        }
+        ResourceGroup->StagingBufferInfo = Vkm_GetBufferInfo(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer);
+        ResourceGroup->StagingBufferMapped = Vkm_MapBufferMemory(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer);
+    }
+}
 
 internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *ResourceGroup, const renderer_resource_group_config *Config)
 {
     VkDevice Device = Vulkan_GetDevice(Vk);
 
-    isize GpuMemoryPoolSizeBytes = Config->GpuMemoryPoolSizeBytes
-        ? Config->GpuMemoryPoolSizeBytes : RENDERER_DEFAULT_GPU_MEMORY_POOL_SIZE;
+    isize GpuLocalMemoryPoolSizeBytes = Config->GpuLocalMemoryPoolSizeBytes
+        ? Config->GpuLocalMemoryPoolSizeBytes : RENDERER_DEFAULT_GPU_LOCAL_MEMORY_POOL_SIZE;
+    isize GpuCpuMemoryPoolSizeBytes = Config->GpuCpuMemoryPoolSizeBytes
+        ? Config->GpuCpuMemoryPoolSizeBytes : RENDERER_DEFAULT_GPU_CPU_MEMORY_POOL_SIZE;
     isize GpuBufferPoolSizeBytes = Config->GpuBufferPoolSizeBytes
         ? Config->GpuBufferPoolSizeBytes : RENDERER_DEFAULT_GPU_BUFFER_POOL_SIZE;
     isize CpuBufferPoolSizeBytes = Config->CpuBufferPoolSizeBytes
@@ -2754,7 +2753,6 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
 
     /* allocators */
     {
-
         int Alignment = 8;
         Arena_Create(&ResourceGroup->CpuArena, Vk->Arena.UserAlloc, CpuBufferPoolSizeBytes, Alignment);
         FreeList_Create(
@@ -2770,7 +2768,8 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
             &(vkm_config) {
                 .Device = Device,
                 .PhysicalDevice = Vulkan_GetPhysicalDevice(Vk),
-                .DeviceMemoryPoolCapacityBytes = GpuMemoryPoolSizeBytes,
+                .LocalDeviceMemoryPoolCapacityBytes = GpuLocalMemoryPoolSizeBytes,
+                .TransDeviceMemoryPoolCapacityBytes = GpuCpuMemoryPoolSizeBytes,
                 .BufferPoolCapacityBytes = GpuBufferPoolSizeBytes,
             }
         );
@@ -3155,39 +3154,24 @@ internal void Vulkan_TransferDataToGpuLocalMemory(
 ) {
     /* TODO: use a dedicated transfer queue */
     /* TODO: better way to do staging buffer, having to create an entire allocator just to use a staging buffer is ridiculous */
-    vkm Tmp;
+    vk_resource_group *Global = Vk->GlobalResourceGroup;
     const vk_gpu_context *GpuContext = &Vk->GpuContext;
-    Arena_Scope(&Vk->Arena)
     {
-        Vkm_Create(&Tmp, &Vk->Arena, &(vkm_config) {
-            .Device = GpuContext->Device,
-            .PhysicalDevice = GpuContext->PhysicalDevice,
-        }); 
-        {
-            vkm_buffer_handle StagingBuffer = Vkm_CreateBuffer(&Tmp, &(vkm_buffer_config) {
-                .BufferType = VKM_BUFFER_TYPE_STAGING, 
-                .MemoryCapacityBytes = SrcSizeBytes,
-            }); 
-            vkm_buffer_info StagingBufferInfo = Vkm_GetBufferInfo(&Tmp, StagingBuffer);
-            vkm_buffer_info DstBufferInfo = Vkm_GetBufferInfo(&DstOwner->GpuAllocator, Dst);
-            void *StagingBufferPtr = Vkm_MapBufferMemory(&Tmp, StagingBuffer);
-            memcpy(StagingBufferPtr, Src, SrcSizeBytes);
+        vkm_buffer_info DstBufferInfo = Vkm_GetBufferInfo(&DstOwner->GpuAllocator, Dst);
+        Vulkan_ResourceGroup_ResizeStagingBuffer(Global, SrcSizeBytes);
+        memcpy(Global->StagingBufferMapped, Src, SrcSizeBytes);
 
-            VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
-            {
-                vkCmdCopyBuffer(CmdBuf,
-                    StagingBufferInfo.Buffer,
-                    DstBufferInfo.Buffer,
-                    1, &(VkBufferCopy) {
-                        .dstOffset = DstBufferInfo.OffsetBytes,
-                        .srcOffset = StagingBufferInfo.OffsetBytes,
-                        .size = SrcSizeBytes,
-                    }
-                );
+        VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
+        vkCmdCopyBuffer(CmdBuf,
+            Global->StagingBufferInfo.Buffer,
+            DstBufferInfo.Buffer,
+            1, &(VkBufferCopy) {
+                .dstOffset = DstBufferInfo.OffsetBytes,
+                .srcOffset = Global->StagingBufferInfo.OffsetBytes,
+                .size = SrcSizeBytes,
             }
-            Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
-        }
-        Vkm_Destroy(&Tmp);
+        );
+        Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
     }
 }
 
@@ -3204,25 +3188,13 @@ renderer_texture_handle Renderer_CreateStaticTexture(
 
     vkm_image_handle TextureImageHandle;
     vkm_image_info TextureImageInfo;
-    Arena_Scope(&Vk->Arena)
     {
-        vkm Tmp;
-        Vkm_Create(&Tmp, &Vk->Arena, &(vkm_config) {
-            .Device = Device,
-            .PhysicalDevice = Vulkan_GetPhysicalDevice(Vk),
-        }); 
-
         vk_gpu_context *GpuContext = &Vk->GpuContext;
         VkCommandPool CommandPool = Vk->CommandPool;
-
-        /* copy image data to staging buffer */
         isize ImageSizeBytes = TextureConfig->Width * TextureConfig->Height * sizeof(u32);
-        vkm_buffer_handle StagingBuffer = Vkm_CreateBuffer(&Tmp, &(vkm_buffer_config) {
-            .BufferType = VKM_BUFFER_TYPE_STAGING, 
-            .MemoryCapacityBytes = ImageSizeBytes
-        });
-        vkm_buffer_info StagingBufferInfo = Vkm_GetBufferInfo(&Tmp, StagingBuffer);
-        memcpy(Vkm_MapBufferMemory(&Tmp, StagingBuffer), ImageData, ImageSizeBytes);
+
+        Vulkan_ResourceGroup_ResizeStagingBuffer(ResourceGroup, ImageSizeBytes);
+        memcpy(ResourceGroup->StagingBufferMapped, ImageData, ImageSizeBytes);
 
         TextureImageHandle = Vkm_CreateImage(
             &ResourceGroup->GpuAllocator, 
@@ -3248,8 +3220,8 @@ renderer_texture_handle Renderer_CreateStaticTexture(
             TextureConfig->MipLevels
         );
         Vulkan_CopyBufferToImage(GpuContext, CommandPool,
-            StagingBufferInfo.Buffer,
-            StagingBufferInfo.OffsetBytes,
+            ResourceGroup->StagingBufferInfo.Buffer,
+            ResourceGroup->StagingBufferInfo.OffsetBytes,
             TextureImageInfo.Image, TextureConfig->Width, TextureConfig->Height, 
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
         );
@@ -3270,7 +3242,6 @@ renderer_texture_handle Renderer_CreateStaticTexture(
             ImageFormat, Image, TextureConfig->Width, TextureConfig->Height, MipLevels
         );
 #endif
-        Vkm_Destroy(&Tmp);
     }
 
     VkSampler Sampler = Vulkan_ResourceGroup_GetSampler(Vk, TextureConfig->SamplerHandle);
@@ -3822,7 +3793,6 @@ void Renderer_Destroy(renderer *Vk)
     }
     vkDestroySwapchainKHR(Device, Vk->Swapchain.Handle, NULL);
     vkDestroyRenderPass(Device, Vk->RenderTarget.RenderPass, NULL);
-    Vkm_Destroy(&GpuContext->VkMalloc);
     vkDestroyCommandPool(Device, Vk->CommandPool, NULL);
     vkDestroyDevice(Device, NULL);
     vkDestroySurfaceKHR(Vk->Instance, Vk->WindowSurface, NULL);

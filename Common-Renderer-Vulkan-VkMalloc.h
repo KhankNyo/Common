@@ -83,6 +83,8 @@ struct vkm_buffer_pool_entry
 {
     VkBuffer Buffer;
     vkm_device_memory_node *DeviceMemoryNode;
+    i64 DeviceMemoryOffsetBytes; /* for vkMapMemory */
+    i64 DeviceMemoryCapacityBytes;
     vkm_buffer_chunk *Allocated;
     vkm_buffer_chunk *Freed;
     vkm_buffer_chunk *LargestFree;
@@ -113,7 +115,8 @@ struct vkm_config
 {
     VkDevice Device;
     VkPhysicalDevice PhysicalDevice;
-    i64 DeviceMemoryPoolCapacityBytes;
+    i64 LocalDeviceMemoryPoolCapacityBytes; /* gpu local */
+    i64 TransDeviceMemoryPoolCapacityBytes; /* gpu-cpu */
     i64 BufferPoolCapacityBytes;
 };
 struct vkm
@@ -122,7 +125,8 @@ struct vkm
     freelist_alloc FreeList;
     VkDevice Device;
     VkPhysicalDevice PhysicalDevice;
-    i64 DeviceMemoryPoolCapacityBytes;
+    i64 LocalDeviceMemoryPoolCapacityBytes;
+    i64 TransDeviceMemoryPoolCapacityBytes;
     i64 BufferPoolCapacityBytes;
 
     dynamic_array(vkm_device_memory) DeviceMemory;

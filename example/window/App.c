@@ -84,8 +84,16 @@ internal void InitRenderer(app *App, const char *AppName)
         App->Renderer = Renderer_Init(AppName, FramesInFlight, ForceTripleBuffering, Profiler);
     }
 
+    /* configure */
+    {
+        int MSAASampleCount = 1; 
+        if (Renderer_IsMSAASampleCountSupported(App->Renderer, 4))
+            MSAASampleCount = 4;
+        (void)MSAASampleCount;
+        /* TODO: set msaa sample count */
+    }
+
     /* create resource group */
-#ifdef NEW_API
     {
         renderer_resource_group_config Config = {
             .CpuBufferPoolSizeBytes = 4096,
@@ -98,7 +106,6 @@ internal void InitRenderer(app *App, const char *AppName)
         };
         App->ResourceGroup = Renderer_CreateResourceGroup(App->Renderer, &Config);
     }
-#endif
 
     /* create a full screen mesh */
     {
@@ -124,22 +131,14 @@ internal void InitRenderer(app *App, const char *AppName)
             0, 1, 2,
             2, 3, 0
         };
-#ifdef NEW_API
         renderer_mesh_config MeshConfig = {
             .IndexCount = STATIC_ARRAY_SIZE(Indices),
             .VertexCount = STATIC_ARRAY_SIZE(Vertices),
             .VertexBufferElementSizeBytes = sizeof(Vertices[0]),
         };
-        App->FullScreenMesh = Renderer_CreateStaticMesh(App->Renderer, App->ResourceGroup, &MeshConfig, Vertices, Indices);
-#else
-        App->FullScreenMesh = Renderer_CreateMesh(App->Renderer, sizeof Vertices, sizeof Indices);
-        renderer_result Result = Renderer_UpdateMesh(App->Renderer, 
-            App->FullScreenMesh, 
-            Vertices, STATIC_ARRAY_SIZE(Vertices), sizeof Vertices[0], 
-            Indices, STATIC_ARRAY_SIZE(Indices)
+        App->FullScreenMesh = Renderer_CreateStaticMesh(
+            App->Renderer, App->ResourceGroup, &MeshConfig, Vertices, Indices
         );
-        UNREACHABLE_IF(Result != RENDERER_SUCCESS, "Renderer_UpdateMesh()");
-#endif
     }
 
     /* upload shader and create graphics pipeline */
@@ -264,7 +263,6 @@ internal void InitRenderer(app *App, const char *AppName)
             0x07, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00,  0x1d, 0x00, 0x00, 0x00, 0x3e, 0x00, 0x03, 0x00,
             0x1b, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00,  0xfd, 0x00, 0x01, 0x00, 0x38, 0x00, 0x01, 0x00,
         };
-#ifdef NEW_API
         renderer_vertex_attributes VertexAttribs[] = {
             [0] = { /* NOTE: location must match with shader */
                 .Binding = 0, .Location = 0, .Offset = offsetof(vertex_buffer, Color), .Type = RENDERER_TYPE_F32x4,
@@ -289,39 +287,5 @@ internal void InitRenderer(app *App, const char *AppName)
         };
         App->GraphicsPipeline = Renderer_CreateGraphicsPipeline(App->Renderer, App->ResourceGroup, &GraphicsPipelineConfig);
         Renderer_BindResourceGroup(App->Renderer, App->ResourceGroup);
-#else
-
-        int MSAASampleCount = Renderer_IsMSAASampleCountSupported(App->Renderer, 4)? 4 : 1;
-        renderer_vertex_attributes VertexAttribs[] = {
-            [0] = { /* NOTE: location must match with shader */
-                .Binding = 0, .Location = 0, .Offset = offsetof(vertex_buffer, Color), .Type = RENDERER_TYPE_F32x4,
-            },
-            [1] = {
-                .Binding = 0, .Location = 1, .Offset = offsetof(vertex_buffer, Pos), .Type = RENDERER_TYPE_F32x3,
-            },
-        };
-        renderer_vertex_description VertexDesc = {
-            .Binding = 0,
-            .AttribCount = STATIC_ARRAY_SIZE(VertexAttribs),
-            .Attribs = VertexAttribs,
-            .Stride = sizeof(vertex_buffer),
-        };
-        int GraphicsPipelineCount = 1;
-        renderer_graphics_pipeline_config GraphicsPipelineConfig = {
-            .EnabledGraphicsFeatures = RENDERER_GFXFT_BLENDING|RENDERER_GFXFT_MSAA,
-            .VertShaderCode = VertexShaderCode,
-            .VertShaderCodeSizeBytes = sizeof VertexShaderCode,
-            .FragShaderCode = FragmentShaderCode,
-            .FragShaderCodeSizeBytes = sizeof FragmentShaderCode,
-            .VertexDescription = &VertexDesc,
-        };
-        int UniformBufferSizeBytes = 1; /* no uniform buffer */
-        Renderer_CreateGraphicsPipelines(App->Renderer, 
-            UniformBufferSizeBytes, 
-            MSAASampleCount, 
-            GraphicsPipelineCount, &GraphicsPipelineConfig, 
-            &App->GraphicsPipeline
-        );
-#endif
     }
 }

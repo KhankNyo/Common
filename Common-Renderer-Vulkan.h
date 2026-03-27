@@ -153,17 +153,14 @@ struct vk_resource_group
     u8 *UniformBufferTmp;
     i32 UniformBufferTmpCapacity;
 
+    vkm_buffer_handle StagingBuffer;
+    vkm_buffer_info StagingBufferInfo;
+    void *StagingBufferMapped;
+
     VkDescriptorPool DescriptorPool;
     VkDescriptorSetLayout DescriptorSetLayout;
     /* NOTE: there are Vk->FramesInFlight amount of DescriptorSets */
     VkDescriptorSet *DescriptorSets;
-#if 0
-    vk_sampler_list_array Samplers;
-    vk_texture_list_array Textures;
-    /* vk_mesh objects are owned by the CpuAllocator */
-    vk_graphics_pipeline_list_array GraphicsPipelines;
-    vk_render_target_list_array RenderTargets;
-#endif
 };
 
 struct renderer
@@ -184,10 +181,6 @@ struct renderer
         VkDevice Device;
         VkQueue GraphicsQueue;
         VkQueue PresentQueue;
-
-        vkm VkMalloc;
-        vkm_buffer_handle StagingBuffer;
-        void *StagingBufferPtr;
 
         profiler *Profiler;
     } GpuContext;
@@ -246,8 +239,7 @@ struct renderer
                       *ResourceGroupFreeSlots, 
                       *GlobalResourceGroup;
 
-    struct vk_render_target
-    {
+    struct vk_render_target {
         VkSampleCountFlags SampleCount;
 
         u32 ImageCount;
@@ -262,8 +254,7 @@ struct renderer
     } RenderTarget;
 
     VkCommandPool CommandPool;
-    struct vk_render_frame
-    {
+    struct vk_render_frame {
         VkCommandBuffer *CommandBuffers;
         VkFence *CpuWaitThisFrame;
         VkSemaphore *GpuWaitForRenderTarget;
