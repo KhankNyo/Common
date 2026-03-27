@@ -2593,9 +2593,9 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
     /* default/global resource group */
     {
         renderer_resource_group_config ResourceConfig = { 
-            .CpuBufferPoolSizeBytes = 2*MB,
-            .GpuMemoryPoolSizeBytes = 256*MB,
-            .GpuBufferPoolSizeBytes = 32*MB,
+            .CpuBufferPoolSizeBytes = 1*MB,
+            .GpuMemoryPoolSizeBytes = 64*MB,
+            .GpuBufferPoolSizeBytes = 8*MB,
 
             .UniformBufferBinding = 0,
             .UniformBufferSizeBytes = 1, /* TODO: put a useful uniform buffer here */
