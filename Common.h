@@ -238,72 +238,6 @@ typedef union
 } m4f;
 
 
-force_inline uint CountTrailingZeros32(u32 Value)
-{
-#if defined(COMPILER_CLANG) || defined(COMPILER_GCC)
-    if (Value == 0) /* when Value == 0, result is UB if compiler used BSF instruction */
-        return 32;
-    return __builtin_ctz(Value);
-#elif defined(COMPILER_MSVC)
-    if (Value == 0)
-        return 32;
-    return _BitScanForward(Value);
-#else
-    /* generic implementation */
-    if (Value == 0) 
-        return 32;
-
-    uint Count = 0;
-    if ((Value & 0x0000FFFF) == 0) Count += 16;
-    if ((Value & 0x00FF00FF) == 0) Count += 8;
-    if ((Value & 0x0F0F0F0F) == 0) Count += 4;
-    if ((Value & 0x33333333) == 0) Count += 2;
-    if ((Value & 0x55555555) == 0) Count += 1;
-    return Count;
-#endif
-}
-
-force_inline uint CountTrailingZeros64(u64 Value)
-{
-#if defined(COMPILER_CLANG) || defined(COMPILER_GCC)
-    if (Value == 0)
-        return 64;
-    return __builtin_ctzll(Value);
-#elif defined(COMPILER_MSVC)
-    if (Value == 0)
-        return 64;
-    return _BitScanForward64(Value);
-#else
-    if (Value == 0)
-        return 64;
-
-    uint Count = 0;
-    if ((Value & 0x00000000FFFFFFFFllu) == 0) Count += 32;
-    if ((Value & 0x0000FFFF0000FFFFllu) == 0) Count += 16;
-    if ((Value & 0x00FF00FF00FF00FFllu) == 0) Count += 8;
-    if ((Value & 0x0F0F0F0F0F0F0F0Fllu) == 0) Count += 4;
-    if ((Value & 0x3333333333333333llu) == 0) Count += 2;
-    if ((Value & 0x5555555555555555llu) == 0) Count += 1;
-    return Count;
-#endif
-}
-
-
-force_inline u32 HashString(const char *Name, int NameLength)
-{
-    u32 h = 0x12345678;
-    // One-byte-at-a-time hash based on Murmur's mix
-    // Source: https://github.com/aappleby/smhasher/blob/master/src/Hashes.cpp
-    // NOTE:(Khanh): adapted to work with non-null terminated string here
-    while (NameLength --> 0)
-    {
-        h ^= *Name++;
-        h *= 0x5bd1e995;
-        h ^= h >> 15;
-    }
-    return h & 0xFF;
-}
-
 force_inline u32 CountBits32(u32 Value)
 {
     /* NOTE:(Khanh): will be optimized into popcnt with -msse4.2 */
@@ -326,6 +260,131 @@ force_inline u64 CountBits64(u64 Value)
         Count++;
     }
     return Count;
+}
+
+
+force_inline uint CountLeadingZeros32(u32);
+force_inline uint CountLeadingZeros64(u64);
+force_inline uint CountTrailingZeros32(u32);
+force_inline uint CountTrailingZeros64(u64);
+
+#if defined(COMPILER_CLANG) || defined(COMPILER_GCC) || defined(COMPILER_TCC)
+force_inline uint CountLeadingZeros32(u32 Value)
+{
+    if (Value == 0)
+        return 32;
+    return __builtin_clz(Value);
+}
+force_inline uint CountLeadingZeros64(u64 Value)
+{
+    if (Value == 0)
+        return 64;
+    return __builtin_clzll(Value);
+}
+force_inline uint CountTrailingZeros32(u32 Value)
+{
+    if (Value == 0)
+        return 32;
+    return __builtin_ctz(Value);
+}
+force_inline uint CountTrailingZeros64(u64 Value)
+{
+    if (Value == 0)
+        return 64;
+    return __builtin_ctzll(Value);
+}
+#elif defined(COMPILER_MSVC)
+force_inline uint CountLeadingZeros32(u32 Value)
+{
+    unsigned long Count;
+    if (!_BitScanReverse(&Count, Value))
+        return 32;
+    return Count;
+}
+force_inline uint CountLeadingZeros64(u64 Value)
+{
+    unsigned long Count;
+    if (!_BitScanReverse64(&Count, Value))
+        return 64;
+    return Count;
+}
+force_inline uint CountTrailingZeros32(u32 Value)
+{
+    unsigned long Count;
+    if (!_BitScanForward(&Count, Value))
+        return 32;
+    return Count;
+}
+force_inline uint CountTrailingZeros64(u64 Value)
+{
+    unsigned long Count;
+    if (!_BitScanForward64(&Count, Value))
+        return 64;
+    return Count;
+}
+#else
+force_inline uint CountLeadingZeros32(u32 Value)
+{
+    Value |= Value >> 1;
+    Value |= Value >> 2;
+    Value |= Value >> 4;
+    Value |= Value >> 8;
+    Value |= Value >> 16;
+    return CountBits32(~Value);
+}
+force_inline uint CountLeadingZeros64(u64 Value)
+{
+    Value |= Value >> 1;
+    Value |= Value >> 2;
+    Value |= Value >> 4;
+    Value |= Value >> 8;
+    Value |= Value >> 16;
+    Value |= Value >> 32;
+    return CountBits64(~Value);
+}
+force_inline uint CountTrailingZeros32(u32 Value)
+{
+    /* generic implementation */
+    uint Count = 32;
+    Value &= -Value;
+    if (Value) Count -= 1;
+    if ((Value & 0x0000FFFF)) Count -= 16;
+    if ((Value & 0x00FF00FF)) Count -= 8;
+    if ((Value & 0x0F0F0F0F)) Count -= 4;
+    if ((Value & 0x33333333)) Count -= 2;
+    if ((Value & 0x55555555)) Count -= 1;
+    return Count;
+}
+force_inline uint CountTrailingZeros64(u64 Value)
+{
+    uint Count = 64;
+    Value &= -Value;
+    if (Value) Count -= 1;
+    if ((Value & 0x00000000FFFFFFFFllu)) Count -= 32;
+    if ((Value & 0x0000FFFF0000FFFFllu)) Count -= 16;
+    if ((Value & 0x00FF00FF00FF00FFllu)) Count -= 8;
+    if ((Value & 0x0F0F0F0F0F0F0F0Fllu)) Count -= 4;
+    if ((Value & 0x3333333333333333llu)) Count -= 2;
+    if ((Value & 0x5555555555555555llu)) Count -= 1;
+    return Count;
+}
+#endif
+
+
+
+force_inline u32 HashString(const char *Name, int NameLength)
+{
+    u32 h = 0x12345678;
+    // One-byte-at-a-time hash based on Murmur's mix
+    // Source: https://github.com/aappleby/smhasher/blob/master/src/Hashes.cpp
+    // NOTE:(Khanh): adapted to work with non-null terminated string here
+    while (NameLength --> 0)
+    {
+        h ^= *Name++;
+        h *= 0x5bd1e995;
+        h ^= h >> 15;
+    }
+    return h & 0xFF;
 }
 
 force_inline bool32 SubstringsAreEqual(const char *A, const char *B, isize Length)
