@@ -2,7 +2,7 @@
 # path of the Common library
 COMMON_LIB_PATH=../..
 
-CC=gcc
+CC=tcc
 CCF=-I"$(COMMON_LIB_PATH)" -I"." -D_DEBUG -std=gnu99 -g -Wall -Wextra 
 DEPS_CCF=-I"$(COMMON_LIB_PATH)" -I"." -D_DEBUG -Wall -g
 LDF=-lvulkan -lm -g

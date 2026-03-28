@@ -78,19 +78,21 @@ internal void InitRenderer(app *App, const char *AppName)
 {
     /* create the renderer */
     {
-        int FramesInFlight = 3;
-        bool32 ForceTripleBuffering = false;
-        profiler *Profiler = NULL;
-        App->Renderer = Renderer_Init(AppName, FramesInFlight, ForceTripleBuffering, Profiler);
+        renderer_config Config = {
+            .FramesInFlight = 3,
+            .ForceTripleBuffering = false,
+            .AppName = AppName,
+        };
+        App->Renderer = Renderer_Create(&Config);
     }
 
     /* configure */
     {
-        int MSAASampleCount = 1; 
-        if (Renderer_IsMSAASampleCountSupported(App->Renderer, 4))
-            MSAASampleCount = 4;
-        (void)MSAASampleCount;
-        /* TODO: set msaa sample count */
+        renderer_msaa_flags Samples = Renderer_GetAvailableMSAAFlags(App->Renderer);
+        if (Samples & RENDERER_MSAA_4X)
+        {
+            Renderer_SetScreenMSAA(App->Renderer, RENDERER_MSAA_4X);
+        }
     }
 
     /* create resource group */
@@ -105,40 +107,41 @@ internal void InitRenderer(app *App, const char *AppName)
             .TextureArrayBinding = 1,
         };
         App->ResourceGroup = Renderer_CreateResourceGroup(App->Renderer, &Config);
-    }
+        {
+            /* create a full screen mesh */
 
-    /* create a full screen mesh */
-    {
-        vertex_buffer Vertices[4] = {
-            [0] = {
-                .Color = {.a = 1},
-                .Pos.At = {-1, 1, 0},
-            },
-            [1] = {
-                .Color = {.r = 1, .a = 1},
-                .Pos.At = {1, 1, 0},
-            },
-            [2] = {
-                .Color = {.g = 1, .a = 1},
-                .Pos.At = {1, -1, 0},
-            },
-            [3] = {
-                .Color = {.b = 1, .a = 1},
-                .Pos.At = {-1, -1, 0},
-            }
-        };
-        u32 Indices[6] = {
-            0, 1, 2,
-            2, 3, 0
-        };
-        renderer_mesh_config MeshConfig = {
-            .IndexCount = STATIC_ARRAY_SIZE(Indices),
-            .VertexCount = STATIC_ARRAY_SIZE(Vertices),
-            .VertexBufferElementSizeBytes = sizeof(Vertices[0]),
-        };
-        App->FullScreenMesh = Renderer_CreateStaticMesh(
-            App->Renderer, App->ResourceGroup, &MeshConfig, Vertices, Indices
-        );
+            vertex_buffer Vertices[4] = {
+                [0] = {
+                    .Color = {.a = 1},
+                    .Pos.At = {-1, 1, 0},
+                },
+                [1] = {
+                    .Color = {.r = 1, .a = 1},
+                    .Pos.At = {1, 1, 0},
+                },
+                [2] = {
+                    .Color = {.g = 1, .a = 1},
+                    .Pos.At = {1, -1, 0},
+                },
+                [3] = {
+                    .Color = {.b = 1, .a = 1},
+                    .Pos.At = {-1, -1, 0},
+                }
+            };
+            u32 Indices[6] = {
+                0, 1, 2,
+                2, 3, 0
+            };
+            renderer_mesh_config MeshConfig = {
+                .IndexCount = STATIC_ARRAY_SIZE(Indices),
+                .VertexCount = STATIC_ARRAY_SIZE(Vertices),
+                .VertexBufferElementSizeBytes = sizeof(Vertices[0]),
+            };
+            App->FullScreenMesh = Renderer_CreateStaticMesh(
+                App->Renderer, App->ResourceGroup, &MeshConfig, Vertices, Indices
+            );
+        }
+        Renderer_BindResourceGroup(App->Renderer, App->ResourceGroup);
     }
 
     /* upload shader and create graphics pipeline */
@@ -286,6 +289,5 @@ internal void InitRenderer(app *App, const char *AppName)
             .VertexDescription = &VertexDesc,
         };
         App->GraphicsPipeline = Renderer_CreateGraphicsPipeline(App->Renderer, App->ResourceGroup, &GraphicsPipelineConfig);
-        Renderer_BindResourceGroup(App->Renderer, App->ResourceGroup);
     }
 }

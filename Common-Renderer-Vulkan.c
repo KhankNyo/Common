@@ -63,7 +63,6 @@ internal PFN_vkDestroyDebugReportCallbackEXT g_VkDestroyDebugReportCallbackEXT;
 
 
 
-#ifdef NEW_API
 
 #define VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT (VKM_MAX_BUFFER_INDEX+1) /* must be powers of 2 for pointer tagging */
 STATIC_ASSERT(sizeof(vk_resource_group) >= VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT, "vk_resource_group needs to be big for pointer tagging");
@@ -117,18 +116,6 @@ internal VkSampler Vulkan_ResourceGroup_GetSampler(renderer *Vk, renderer_sample
     return Result.ResourceGroup->Samplers.Data[Result.Handle];
 }
 
-internal VkSampler Vulkan_ResourceGroup_GetTexture(renderer *Vk, renderer_sampler_handle Handle)
-{
-    if (0 == Handle.Value)
-    {
-        ASSERT(Vk->GlobalResourceGroup && Vk->GlobalResourceGroup->Samplers.Count >= 1);
-        return Vk->GlobalResourceGroup->Samplers.Data[0];
-    }
-    vk_resource_group_and_index Result = Vulkan_ResourceGroup_ExtractHandle(Handle.Value);
-    ASSERT(Result.Handle < Result.ResourceGroup->Samplers.Count, "Invalid handle");
-    return Result.ResourceGroup->Samplers.Data[Result.Handle];
-}
-
 internal vk_mesh *Vulkan_ResourceGroup_GetMesh(renderer *Vk, renderer_mesh_handle Handle)
 {
     (void)Vk;
@@ -147,7 +134,6 @@ internal vk_graphics_pipeline *Vulkan_ResourceGroup_GetGraphicsPipeline(renderer
     return &Result.ResourceGroup->GraphicsPipelines.Data[Result.Handle];
 }
 
-#endif
 
 
 internal VkBool32 Vulkan_DebugCallback(
@@ -180,11 +166,11 @@ force_inline VkDevice Vulkan_GetDevice(const renderer *Vk)
     return Vk->GpuContext.Device;
 }
 
-internal VkSampleCountFlags Vulkan_GetVkSampleCountFlags(const vk_gpu *Gpu, int SampleCount)
+force_inline VkSampleCountFlagBits Vulkan_GetVkSampleCountFlags(renderer_msaa_flags Flag)
 {
-    switch (SampleCount)
+    switch (Flag)
     {
-#define CASE(n) case n: if (Gpu->Properties.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_##n##_BIT) return VK_SAMPLE_COUNT_##n##_BIT; break
+#define CASE(n) case RENDERER_MSAA_ ## n ## X: return VK_SAMPLE_COUNT_##n##_BIT;
     CASE(1);
     CASE(2);
     CASE(4);
@@ -193,9 +179,9 @@ internal VkSampleCountFlags Vulkan_GetVkSampleCountFlags(const vk_gpu *Gpu, int 
     CASE(32);
     CASE(64);
 #undef CASE
-    default: break;
+    default: 
+        return (VkSampleCountFlagBits)Flag;
     }
-    UNREACHABLE_IF(true, "Invalid sample count");
 }
 
 internal VkDebugReportCallbackEXT Vulkan_CreateDebugCallback(VkInstance Instance)
@@ -762,99 +748,6 @@ internal vk_swapchain Vulkan_CreateSwapchain(
     return Swapchain;
 }
 
-#ifndef NEW_API
-internal void Vulkan_DestroySwapchainImageAndFramebuffer(
-    VkDevice Device, 
-    vk_swapchain_image *SwapchainImage, 
-    bool32 ShouldDistroySyncObjects
-) {
-    for (u32 i = 0; i < SwapchainImage->Count; i++)
-    {
-        vkDestroyImageView(Device, SwapchainImage->ViewArray[i], NULL);
-        vkDestroyFramebuffer(Device, SwapchainImage->FramebufferArray[i], NULL);
-        if (ShouldDistroySyncObjects)
-        {
-            vkDestroySemaphore(Device, SwapchainImage->RenderFinishedSemaphoreArray[i], NULL);
-        }
-    }
-}
-
-internal void Vulkan_CreateSwapchainImageViewAndFramebuffers(
-    vk_swapchain_image *SwapchainImage,
-    const vk_swapchain *Swapchain, 
-    const vk_gpu_context *GpuContext, 
-    VkRenderPass RenderPass, VkImageView ColorImageView, VkImageView DepthImageView,
-    platform_framebuffer_dimensions Dimensions,
-    bool32 ShouldCreateSyncObjects,
-    arena_alloc *Arena
-) {
-    VkDevice Device = GpuContext->Device;
-    u32 ImageCount;
-    VkImage *SwapchainImages;
-    {
-        vkGetSwapchainImagesKHR(Device, Swapchain->Handle, &ImageCount, NULL);
-        Arena_AllocArray(Arena, &SwapchainImages, ImageCount);
-        vkGetSwapchainImagesKHR(Device, Swapchain->Handle, &ImageCount, SwapchainImages);
-    }
-
-    VkImageView *SwapchainImageViews;
-    {
-        Arena_AllocArray(Arena, &SwapchainImageViews, ImageCount);
-        int MipLevel = 1;
-        for (u32 i = 0; i < ImageCount; i++)
-        {
-            SwapchainImageViews[i] = Vulkan_CreateImageView(Device, SwapchainImages[i], Swapchain->ImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, MipLevel);
-        }
-    }
-
-    VkFramebuffer *Framebuffers;
-    {
-        Arena_AllocArray(Arena, &Framebuffers, ImageCount);
-        for (u32 i = 0; i < ImageCount; i++)
-        {
-            VkImageView Attachments[] = { 
-                ColorImageView,
-                DepthImageView,
-                SwapchainImageViews[i],
-            };
-            /* NOTE: framebuffer must be compatible with swapchain and render pass */
-            VkFramebufferCreateInfo CreateInfo = {
-                .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-                .attachmentCount = STATIC_ARRAY_SIZE(Attachments),
-                .pAttachments = Attachments,
-                .renderPass = RenderPass,
-                .width = Dimensions.Width,
-                .height = Dimensions.Height,
-                .layers = 1,
-            };
-            VK_CHECK(vkCreateFramebuffer(Device, &CreateInfo, NULL, &Framebuffers[i]));
-        }
-    }
-
-    if (ShouldCreateSyncObjects)
-    {
-        VkSemaphore *RenderFinishedSemaphores;
-        {
-            Arena_AllocArray(Arena, &RenderFinishedSemaphores, ImageCount);
-            VkSemaphoreCreateInfo SemaphoreCreateInfo = {
-                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-            };
-            for (u32 i = 0; i < ImageCount; i++)
-            {
-                VK_CHECK(vkCreateSemaphore(Device, &SemaphoreCreateInfo, NULL, &RenderFinishedSemaphores[i]));
-            }
-        }
-
-        SwapchainImage->RenderFinishedSemaphoreArray = RenderFinishedSemaphores;
-    }
-
-    SwapchainImage->Count = ImageCount;
-    SwapchainImage->Array = SwapchainImages;
-    SwapchainImage->ViewArray = SwapchainImageViews;
-    SwapchainImage->FramebufferArray = Framebuffers;
-}
-#endif /* NEW_API */
-
 internal VkShaderModule Vulkan_CreateShaderModule(
     VkDevice Device, const u8 *ShaderCode, isize CodeSize
 ) {
@@ -1083,19 +976,19 @@ internal vk_graphics_pipeline Vulkan_CreateGraphicsPipeline(
 }
 
 internal VkRenderPass Vulkan_CreateRenderPass(VkDevice Device, 
-    VkSampleCountFlagBits Samples, VkFormat DstImageFormat, VkFormat DepthBufferFormat
+    VkSampleCountFlagBits Sample, VkFormat DstImageFormat, VkFormat DepthBufferFormat
 ) {
     VkRenderPass RenderPass = VK_NULL_HANDLE;
     {
-#define ATTACHMENT_COUNT 3
 #define COLOR_ATTACHMENT 0
 #define DEPTH_ATTACHMENT 1
 #define COLOR_RESOLVE_ATTACHMENT 2
+#define ATTACHMENT_COUNT 3
         /* NOTE: have to specify array size because TCC would not compile without it */
         VkAttachmentDescription Attachments[ATTACHMENT_COUNT] = { 
             [COLOR_ATTACHMENT] = {
                 .format = DstImageFormat,
-                .samples = Samples,
+                .samples = Sample,
                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, 
                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                 /* NOTE: set these if we have a stencil buffer */
@@ -1106,7 +999,7 @@ internal VkRenderPass Vulkan_CreateRenderPass(VkDevice Device,
             },
             [DEPTH_ATTACHMENT] = {
                 .format = DepthBufferFormat,
-                .samples = Samples,
+                .samples = Sample,
                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, /* clear after done drawing */
                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -1136,7 +1029,9 @@ internal VkRenderPass Vulkan_CreateRenderPass(VkDevice Device,
             .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         };
         VkAttachmentReference ColorAttachmentResolveRef = {
-            .attachment = COLOR_RESOLVE_ATTACHMENT,                         /* index in Attachments */
+            .attachment = (Sample == VK_SAMPLE_COUNT_1_BIT)
+                ? VK_ATTACHMENT_UNUSED 
+                : COLOR_RESOLVE_ATTACHMENT,                         /* index in Attachments */
             .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         };
 
@@ -1387,7 +1282,7 @@ internal vk_render_target Vulkan_CreateRenderTarget(
                 .Width = Monitor.Width, 
                 .Height = Monitor.Height, 
                 .MipLevels = 1, 
-                .Samples = SampleCount, 
+                .Sample = SampleCount, 
                 .Format = Swapchain->ImageFormat, 
                 .Tiling = VK_IMAGE_TILING_OPTIMAL, 
                 .Usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 
@@ -1414,7 +1309,7 @@ internal vk_render_target Vulkan_CreateRenderTarget(
                 .Width = Monitor.Width, 
                 .Height = Monitor.Height, 
                 .MipLevels = 1, 
-                .Samples = SampleCount, 
+                .Sample = SampleCount, 
                 .Format = DepthBufferImageFormat, 
                 .Tiling = VK_IMAGE_TILING_OPTIMAL, 
                 .Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
@@ -1514,12 +1409,26 @@ internal void Vulkan_ResizeRenderTarget(
         vkDestroyFramebuffer(Device, RenderTarget->Framebuffers[i], NULL);
     }
 
-    RenderTarget->ColorResource = Vkm_ResizeImage(Vkm, RenderTarget->ColorResource, Swapchain->Width, Swapchain->Height);
+    RenderTarget->ColorResource = Vkm_ResizeImage(Vkm, 
+        RenderTarget->ColorResource, 
+        &(vkm_resize_image_config) {
+            .Width = Swapchain->Width, 
+            .Height = Swapchain->Height,
+            .Sample = RenderTarget->SampleCount,
+        }
+    );
     vkm_image_info MSAABufferInfo = Vkm_GetImageInfo(Vkm, RenderTarget->ColorResource);
 
     vkm_image_info DepthBufferInfo;
     {
-        RenderTarget->DepthResource = Vkm_ResizeImage(Vkm, RenderTarget->DepthResource, Swapchain->Width, Swapchain->Height);
+        RenderTarget->DepthResource = Vkm_ResizeImage(Vkm, 
+            RenderTarget->DepthResource, 
+            &(vkm_resize_image_config) {
+                .Width = Swapchain->Width, 
+                .Height = Swapchain->Height,
+                .Sample = RenderTarget->SampleCount,
+            }
+        );
         DepthBufferInfo = Vkm_GetImageInfo(Vkm, RenderTarget->DepthResource);
         Vulkan_TransitionImageLayout(GpuContext, 
             CommandPool, 
@@ -1566,7 +1475,6 @@ internal void Vulkan_ResizeRenderTarget(
 
 internal void Vulkan_RecreateSwapchain(renderer *Vk)
 {
-#ifdef NEW_API
     Vk->IsResized = false;
     VkDevice Device = Vulkan_GetDevice(Vk);
     vk_gpu_context *GpuContext = &Vk->GpuContext;
@@ -1616,118 +1524,6 @@ internal void Vulkan_RecreateSwapchain(renderer *Vk)
             );
         }
     }
-
-#else
-    Vk->IsResized = false;
-    profiler *Profiler = Vk->Profiler;
-    vk_gpu_context *GpuContext = &Vk->GpuContext;
-    Profiler_Scope(Profiler, "Vulkan_RecreateSwapchain()")
-    {
-        VkDevice Device = Vk->GpuContext.Device;
-
-        /* TODO: move this out of here */
-#if 0
-        Platform_ProfileBlock(WaitEventTime)
-        {
-            int Width, Height;
-            glfwGetFramebufferSize(Vk->Window, &Width, &Height);
-            while (Width == 0 || Height == 0)
-            {
-                glfwGetFramebufferSize(Vk->Window, &Width, &Height);
-                glfwWaitEvents();
-                if (glfwWindowShouldClose(Vk->Window))
-                    break;
-            }
-        }
-#endif
-
-        Profiler_Scope(Profiler, "vkDeviceWaitIdle()")
-        {
-            vkDeviceWaitIdle(Device);
-        }
-
-        arena_context Context;
-        Profiler_Scope(Profiler, "arena context creation")
-        {
-            Arena_TryPopContext(Arena, &Vk->Swapchain.ArenaContext);
-            Context = Arena_BeginContext(Arena);
-        }
-
-        {
-            platform_framebuffer_dimensions FramebufferDimensions = Platform_Get(FramebufferDimensions);
-            int Width = FramebufferDimensions.Width;
-            int Height = FramebufferDimensions.Height;
-            vk_swapchain NewSwapchain = { 0 };
-            vkm_image_and_view NewDepthBuffer = { 0 };
-            vkm_image_and_view NewColorBuffer = { 0 };
-            vk_swapchain_image NewSwapchainImage = Vk->SwapchainImage; /* NOTE: need to keep sync objects */
-            {
-                bool32 DontTouchSyncObjects = false;
-                vk_swapchain *OldSwapchain = &Vk->Swapchain;
-                vkm_image_and_view *OldDepthBuffer = &Vk->DepthBuffer;
-                vkm_image_and_view *OldColorBuffer = &Vk->ColorResource;
-                vk_swapchain_image *OldSwapchainImage = &Vk->SwapchainImage;
-                vkm *Vkm = &GpuContext->VkMalloc;
-
-                /* NOTE: DO NOT REORDER */
-                Profiler_Scope(Profiler, "Vulkan_DestroySwapchainImageAndFramebuffer()")
-                {
-                    Vulkan_DestroySwapchainImageAndFramebuffer(
-                        Device, OldSwapchainImage, DontTouchSyncObjects
-                    );
-                }
-                Profiler_Scope(Profiler, "Vulkan_CreateSwapchain()")
-                {
-                    NewSwapchain = Vulkan_CreateSwapchain(
-                        Profiler,
-                        GpuContext,
-                        Width, Height,
-                        Vk->ForceTripleBuffering,
-                        Vk->WindowSurface, 
-                        OldSwapchain->Handle,
-                        *Arena
-                    );
-                    Width = NewSwapchain.Extent.width;
-                    Height = NewSwapchain.Extent.height;
-                }
-                Profiler_Scope(Profiler, "Vulkan_CreateColorResource()")
-                {
-                    NewColorBuffer = Vkm_ImageAndView_Resize(Vkm, *OldColorBuffer, Width, Height);
-                }
-                Profiler_Scope(Profiler, "Vulkan_CreateDepthBuffer()")
-                {
-                    NewDepthBuffer = Vulkan_ResizeDepthBuffer(GpuContext, Vk->CommandPool, *OldDepthBuffer, Width, Height);
-                }
-                Profiler_Scope(Profiler, "Vulkan_CreateSwapchainImageViewAndFramebuffers()")
-                {
-                    Vulkan_CreateSwapchainImageViewAndFramebuffers(
-                        &NewSwapchainImage, 
-                        &NewSwapchain, 
-                        GpuContext, 
-                        Vk->RenderPass, 
-                        NewColorBuffer.ImageView, NewDepthBuffer.ImageView, 
-                        FramebufferDimensions, 
-                        DontTouchSyncObjects,
-                        Arena
-                    );
-                }
-                Profiler_Scope(Profiler, "Vulkan_DestroySwapchain()")
-                {
-                    Vulkan_DestroySwapchain(Device, OldSwapchain);
-                }
-            }
-            Vk->Swapchain = NewSwapchain;
-            Vk->SwapchainImage = NewSwapchainImage;
-            Vk->DepthBuffer = NewDepthBuffer;
-            Vk->ColorResource = NewColorBuffer;
-        }
-        Profiler_Scope(Profiler, "arena context end")
-        {
-            Arena_EndContext(Arena, &Context);
-            Vk->Swapchain.ArenaContext = Context;
-        }
-    }
-#endif
 }
 
 
@@ -1737,7 +1533,6 @@ internal void Vulkan_RecordCommandBuffer(
     u32 FramebufferIndex,
     const renderer_draw_pipeline *Pipelines, i32 PipelineCount
 ) {
-#ifdef NEW_API
     vk_swapchain *Swapchain = &Vk->Swapchain;
     VkCommandBufferBeginInfo BeginInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1833,310 +1628,8 @@ internal void Vulkan_RecordCommandBuffer(
         vkCmdEndRenderPass(CmdBuffer);
     }
     VK_CHECK(vkEndCommandBuffer(CmdBuffer));
-
-
-#else
-
-    vkm *Vkm = &Vk->GpuContext.VkMalloc;
-    vk_swapchain *Swapchain = &Vk->Swapchain;
-    vk_swapchain_image *SwapchainImage = &Vk->SwapchainImage;
-    VkCommandBufferBeginInfo BeginInfo = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .pInheritanceInfo = NULL, /* NOTE: for secondary command buffers */
-    };
-
-    VK_CHECK(vkBeginCommandBuffer(CmdBuffer, &BeginInfo));
-    {
-        VkClearValue Clears[] = {
-            [0] = {.color.float32 = {.2f, .3f, .4f, 1.0f}},
-            [1] = {.depthStencil = {1.0f, 0.0f}},
-        };
-        VkRenderPassBeginInfo RenderPassBeginInfo = {
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-            .renderPass = Vk->RenderPass,
-
-            .renderArea = {
-                .offset = { 0 },
-                .extent = Swapchain->Extent,
-            },
-            .framebuffer = SwapchainImage->FramebufferArray[FramebufferIndex],
-
-            .clearValueCount = STATIC_ARRAY_SIZE(Clears),
-            .pClearValues = Clears,
-        };
-        vkCmdBeginRenderPass(CmdBuffer, &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-        {
-            VkViewport FullScreenViewport = { 
-                .x = 0, 
-                .y = (float)Swapchain->Height, 
-                .width = (float)Swapchain->Width, 
-                .height = -(float)Swapchain->Height,
-                .maxDepth = 1.0f, 
-                .minDepth = 0.0f,
-            };
-
-            /* bind each pipeline and draw each mesh group */
-            for (int i = 0; i < PipelineCount; i++)
-            {
-                const renderer_draw_pipeline *DrawPipeline = Pipelines + i;
-                const vk_graphics_pipeline *Pipeline = &Vk->GraphicsPipelines.Data[
-                    DrawPipeline->GraphicsPipelineHandle.Value
-                ];
-
-                vkCmdBindPipeline(CmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline->Handle);
-                vkCmdSetViewport(CmdBuffer, 0, 1, &FullScreenViewport);
-
-                for (int k = 0; k < DrawPipeline->GroupCount; k++)
-                {
-                    const renderer_draw_pipeline_group *Group = DrawPipeline->Groups + k;
-                    const vk_mesh *Mesh = &Vk->MeshArray.Data[Group->MeshHandle.Value];
-
-                    VkRect2D Scissor = {
-                        .offset = {
-                            .x = Group->Scissor.OffsetX,
-                            .y = Group->Scissor.OffsetY,
-                        },
-                        .extent = {
-                            .width = Group->Scissor.Width == 0? Swapchain->Width : Group->Scissor.Width,
-                            .height = Group->Scissor.Height == 0? Swapchain->Height : Group->Scissor.Height,
-                        },
-                    }; 
-
-                    vkCmdSetScissor(CmdBuffer, 0, 1, &Scissor);
-                    ASSERT(Mesh->IndexCount, "handle: %d", Group->MeshHandle.Value);
-
-                    VkBuffer VertexBuffers[] = { Vkm_Buffer_GetVkBuffer(Vkm, Mesh->VertexBuffer) };
-                    ASSERT(VertexBuffers[0] != NULL);
-                    VkDeviceSize Offsets[] = { Vkm_Buffer_GetOffsetBytes(Mesh->VertexBuffer) };
-                    vkCmdBindVertexBuffers(CmdBuffer, 0, 1, VertexBuffers, Offsets);
-
-                    vkCmdBindIndexBuffer(CmdBuffer, 
-                        Vkm_Buffer_GetVkBuffer(Vkm, Mesh->IndexBuffer), 
-                        Vkm_Buffer_GetOffsetBytes(Mesh->IndexBuffer), 
-                        VK_INDEX_TYPE_UINT32
-                    );
-
-                    VkDescriptorSet *CurrentDescriptorSet = Vk->FrameData.DescriptorSetArray + Vk->CurrentFrame;
-                    vkCmdBindDescriptorSets(CmdBuffer, 
-                        VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                        Pipeline->Layout, 
-                        0, 1, CurrentDescriptorSet, 
-                        0, NULL
-                    );
-
-                    /* draw call */
-                    u32 IndexCount = Group->Mesh_IndexBuffer_ElementCount;
-                    if (IndexCount == 0)
-                        IndexCount = Mesh->IndexCount;
-                    vkCmdDrawIndexed(CmdBuffer, IndexCount, 1, Group->Mesh_IndexBuffer_FirstElement, 0, 0);
-                }
-            }
-        }
-        vkCmdEndRenderPass(CmdBuffer);
-    }
-    VK_CHECK(vkEndCommandBuffer(CmdBuffer));
-
-#endif
 }
 
-
-
-internal VkDescriptorSetLayout Vulkan_CreateDescriptorSetLayout(VkDevice Device, int UniformBufferDescriptorCount, int ImageSamplerDescriptorCount)
-{
-    VkDescriptorSetLayout Layout;
-    {
-        VkDescriptorSetLayoutBinding Bindings[] = {
-            [0] = {
-                .binding = BINDING_TYPE_UNIFORM_BUFFER,
-                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = UniformBufferDescriptorCount,
-                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-                .pImmutableSamplers = NULL,
-            },
-            [1] = {
-                .binding = BINDING_TYPE_COMBINED_IMAGE_SAMPLER,
-                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .descriptorCount = ImageSamplerDescriptorCount,
-                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-                .pImmutableSamplers = NULL,
-            },
-        };
-
-        VkDescriptorSetLayoutCreateInfo CreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .bindingCount = STATIC_ARRAY_SIZE(Bindings),
-            .pBindings = Bindings,
-        };
-        VK_CHECK(vkCreateDescriptorSetLayout(Device, &CreateInfo, NULL, &Layout));
-    }
-    return Layout;
-}
-
-internal VkDescriptorPool Vulkan_CreateDescriptorPool(VkDevice Device, int FramesInFlight, int UniformBufferDescriptorCount, int ImageSamplerDescriptorCount)
-{
-    VkDescriptorPoolSize PoolSizes[] = {
-        [0] = {
-            .descriptorCount = UniformBufferDescriptorCount,
-            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        },
-        [1] = {
-            .descriptorCount = ImageSamplerDescriptorCount,
-            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        },
-    };
-
-    int MaxDescriptorCount = (UniformBufferDescriptorCount + ImageSamplerDescriptorCount) * FramesInFlight;
-    VkDescriptorPoolCreateInfo CreateInfo = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .poolSizeCount = STATIC_ARRAY_SIZE(PoolSizes),
-        .pPoolSizes = PoolSizes,
-        .maxSets = MaxDescriptorCount,
-        .flags = 0,
-    };
-    VkDescriptorPool DescriptorPool;
-    VK_CHECK(vkCreateDescriptorPool(Device, &CreateInfo, NULL, &DescriptorPool));
-    return DescriptorPool;
-}
-
-#ifndef NEW_API
-internal vk_frame_data Vulkan_CreateFrameData(
-    vk_gpu_context *GpuContext,
-    VkCommandPool CommandPool,
-    VkDescriptorPool DescriptorPool,
-    VkDescriptorSetLayout DescriptorSetLayout, 
-    int FramesInFlight,
-    vk_texture_array *TextureArray,
-    VkDeviceSize UniformBufferSize,
-    arena_alloc *Arena
-) {
-    VkDevice Device = GpuContext->Device;
-
-    vkm_buffer *UniformBufferArray;
-    void **UniformBufferPtrArray;
-    {
-        Arena_AllocArray(Arena, &UniformBufferArray, FramesInFlight);
-        Arena_AllocArray(Arena, &UniformBufferPtrArray, FramesInFlight);
-        for (int i = 0; i < FramesInFlight; i++)
-        {
-            vkm_buffer UniformBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_CPU_VISIBLE, UniformBufferSize);
-            UniformBufferPtrArray[i] = Vkm_Buffer_GetMappedMemory(&GpuContext->VkMalloc, UniformBuffer);
-            UniformBufferArray[i] = UniformBuffer;
-        }
-    }
-
-    /* allocate a descriptor set for each frame in flight */
-    VkDescriptorSet *DescriptorSets;
-    int DescriptorSetCount = FramesInFlight;
-    Arena_AllocArray(Arena, &DescriptorSets, DescriptorSetCount);
-    Arena_Scope(Arena)
-    {
-        VkDescriptorSetLayout *DescriptorSetLayouts;
-        Arena_AllocArrayNonZero(Arena, &DescriptorSetLayouts, DescriptorSetCount);
-        for (int i = 0; i < DescriptorSetCount; i++)
-        {
-            DescriptorSetLayouts[i] = DescriptorSetLayout;
-        }
-
-        VkDescriptorSetAllocateInfo AllocInfo = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool = DescriptorPool, 
-            .descriptorSetCount = DescriptorSetCount,
-            .pSetLayouts = DescriptorSetLayouts,
-        };
-        VK_CHECK(vkAllocateDescriptorSets(Device, &AllocInfo, DescriptorSets));
-    }
-
-    /* update descriptor sets */
-    {
-        VkDescriptorImageInfo *TextureImageInfos;
-        Arena_AllocArray(Arena, &TextureImageInfos, TextureArray->Count);
-        for (int i = 0; i < TextureArray->Count; i++)
-        {
-            TextureImageInfos[i] = (VkDescriptorImageInfo) {
-                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                .imageView = TextureArray->Data[i].ImageView,
-                .sampler = TextureArray->Data[i].Sampler,
-            };
-        }
-
-        for (int i = 0; i < DescriptorSetCount; i++)
-        {
-            VkDescriptorBufferInfo BufferInfo = {
-                .buffer = Vkm_Buffer_GetVkBuffer(&GpuContext->VkMalloc, UniformBufferArray[i]),
-                .offset = Vkm_Buffer_GetOffsetBytes(UniformBufferArray[i]),
-                .range = UniformBufferSize,
-            };
-            VkWriteDescriptorSet Write[] = {
-                [0] = {
-                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    .dstSet = DescriptorSets[i],
-                    .dstBinding = BINDING_TYPE_UNIFORM_BUFFER,
-                    .dstArrayElement = 0, /* if uniform is an array, index to update */
-                    .descriptorCount = 1, /* amount of descriptor to update starting from dstArrayElement */
-                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                    .pBufferInfo = &BufferInfo,     /* if descriptor was for buffer data */
-                    .pImageInfo = NULL,             /* if descriptor was for image data */
-                    .pTexelBufferView = NULL,       /* if descriptor was for buffer view */
-                },
-                [1] = {
-                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    .dstSet = DescriptorSets[i],
-                    .dstBinding = BINDING_TYPE_COMBINED_IMAGE_SAMPLER,
-                    .dstArrayElement = 0, /* if uniform is an array, index to update */
-                    .descriptorCount = TextureArray->Count, /* amount of descriptor to update starting from dstArrayElement */
-                    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    .pBufferInfo = NULL,     /* if descriptor was for buffer data */
-                    .pImageInfo = TextureImageInfos,             /* if descriptor was for image data */
-                    .pTexelBufferView = NULL,       /* if descriptor was for buffer view */
-                },
-            };
-            VkCopyDescriptorSet *Copy = NULL;
-            vkUpdateDescriptorSets(Device, STATIC_ARRAY_SIZE(Write), Write, 0, Copy);
-        }
-    }
-
-    VkCommandBuffer *CmdBufArray;
-    {
-        Arena_AllocArray(Arena, &CmdBufArray, FramesInFlight);
-        VkCommandBufferAllocateInfo AllocateInfo = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = CommandPool,
-            .commandBufferCount = FramesInFlight,
-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        };
-        VK_CHECK(vkAllocateCommandBuffers(Device, &AllocateInfo, CmdBufArray));
-    }
-
-    VkFence *InFlightFenceArray;
-    VkSemaphore *ImageAvailableSemaphoreArray;
-    {
-        Arena_AllocArray(Arena, &InFlightFenceArray, FramesInFlight);
-        Arena_AllocArray(Arena, &ImageAvailableSemaphoreArray, FramesInFlight);
-
-        VkFenceCreateInfo InFlightFenceCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-            .flags = VK_FENCE_CREATE_SIGNALED_BIT, /* fence initted in signaled state */
-        };
-        VkSemaphoreCreateInfo SemaphoreCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-        };
-        for (int i = 0; i < FramesInFlight; i++)
-        {
-            VK_CHECK(vkCreateFence(Device, &InFlightFenceCreateInfo, NULL, &InFlightFenceArray[i]));
-            VK_CHECK(vkCreateSemaphore(Device, &SemaphoreCreateInfo, NULL, &ImageAvailableSemaphoreArray[i]));
-        }
-    }
-
-    return (vk_frame_data) {
-        .InFlightFenceArray = InFlightFenceArray,
-        .ImageAvailableSemaphoreArray = ImageAvailableSemaphoreArray,
-        .CommandBufferArray = CmdBufArray,
-        .DescriptorSetArray = DescriptorSets,
-        .UniformBufferArray = UniformBufferArray,
-        .UniformMappedMemoryArray = UniformBufferPtrArray,
-    };
-}
-#endif /* NEW_API */
 
 /* NOTE: src buffer must have the same format as DstFormat */
 internal void Vulkan_CopyBufferToImage(
@@ -2320,7 +1813,6 @@ internal void Vulkan_GenerateMipmap(
 
 void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 PipelineCount)
 {
-#ifdef NEW_API
     VkDevice Device = Vulkan_GetDevice(Vk);
     vk_swapchain *Swapchain = &Vk->Swapchain;
     vk_gpu_context *GpuContext = &Vk->GpuContext;
@@ -2414,98 +1906,9 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
     Vk->CurrentFrame++;
     if (Vk->CurrentFrame >= Vk->FramesInFlight)
         Vk->CurrentFrame = 0;
-#else
-    arena_alloc *Arena = &Vk->Arena;
-    vk_gpu_context *GpuContext = &Vk->GpuContext;
-    vk_frame_data *Frame = &Vk->FrameData;
-    vk_swapchain_image *ScImage = &Vk->SwapchainImage;
-    VkDevice Device = Vulkan_GetDevice(Vk);
-    VkCommandBuffer CmdBuffer = Frame->CommandBufferArray[Vk->CurrentFrame];
-    VkSwapchainKHR Swapchain = Vk->Swapchain.Handle;
-
-    /* wait for gpu to finish displaying */
-    u32 ImageIndex = 0;
-    {
-        vkWaitForFences(Device, 1, &Frame->InFlightFenceArray[Vk->CurrentFrame], VK_TRUE, UINT64_MAX);
-        VkResult Result = vkAcquireNextImageKHR(
-            Device, Swapchain, UINT64_MAX, 
-            Frame->ImageAvailableSemaphoreArray[Vk->CurrentFrame], 
-            VK_NULL_HANDLE, &ImageIndex
-        );
-        if (Result == VK_ERROR_OUT_OF_DATE_KHR)
-        {
-            Vulkan_RecreateSwapchain(Vk, Arena);
-            return;
-        }
-        else if (Result != VK_SUCCESS && Result != VK_SUBOPTIMAL_KHR)
-        {
-            VK_FATAL("Vulkan: Unable to acquire next swapchain image.");
-        }
-    }
-    vkResetFences(Device, 1, &Frame->InFlightFenceArray[Vk->CurrentFrame]);
-
-
-    VkCommandBufferResetFlags Flags = 0;
-    vkResetCommandBuffer(CmdBuffer, Flags);
-    Vulkan_RecordCommandBuffer(Vk, CmdBuffer, ImageIndex, Pipelines, PipelineCount);
-    if (Vk->ShouldUpdateUniformBuffer)
-    {
-        memcpy(Frame->UniformMappedMemoryArray[Vk->CurrentFrame], Vk->UniformBuffer.Data, Vk->UniformBuffer.Count);
-        Vk->ShouldUpdateUniformBuffer = false;
-    }
-
-
-    VkPipelineStageFlags WaitStages[] = { 
-        //VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT 
-    };
-    VkSemaphore WaitSemaphores[] = { Frame->ImageAvailableSemaphoreArray[Vk->CurrentFrame], };
-    VkSemaphore SignalSemaphores[] = { ScImage->RenderFinishedSemaphoreArray[ImageIndex], };
-    VkSubmitInfo SubmitInfo = {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .waitSemaphoreCount = STATIC_ARRAY_SIZE(WaitSemaphores), 
-        .pWaitSemaphores = WaitSemaphores,
-        .pWaitDstStageMask = WaitStages,
-        .commandBufferCount = 1, 
-        .pCommandBuffers = &CmdBuffer,
-        .signalSemaphoreCount = STATIC_ARRAY_SIZE(SignalSemaphores),
-        .pSignalSemaphores = SignalSemaphores,
-    };
-    VK_CHECK(vkQueueSubmit(GpuContext->GraphicsQueue, 1, &SubmitInfo, 
-            Frame->InFlightFenceArray[Vk->CurrentFrame]
-        ));
-
-
-    u32 ImageIndices[] = { ImageIndex };
-    VkSwapchainKHR Swapchains[] = { Swapchain };
-    VkPresentInfoKHR PresentInfo = {
-        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .waitSemaphoreCount = STATIC_ARRAY_SIZE(SignalSemaphores),
-        .pWaitSemaphores = SignalSemaphores,
-        .swapchainCount = 1,
-        .pImageIndices = ImageIndices,
-        .pSwapchains = Swapchains,
-        .pResults = NULL,
-    };
-    {
-        VkResult Result = vkQueuePresentKHR(GpuContext->PresentQueue, &PresentInfo);
-        if (Result == VK_SUBOPTIMAL_KHR || Result == VK_ERROR_OUT_OF_DATE_KHR || Vk->IsResized)
-        {
-            Vulkan_RecreateSwapchain(Vk, Arena);
-        }
-        else if (Result != VK_SUCCESS && Result != VK_SUBOPTIMAL_KHR)
-        {
-            VK_FATAL("Vulkan: Unable to present swapchain image.");
-        }
-    }
-
-    Vk->CurrentFrame++;
-    if (Vk->CurrentFrame >= Vk->FramesInFlight)
-        Vk->CurrentFrame = 0;
-#endif
 }
 
-renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 ForceTripleBuffering, profiler *Profiler) 
+renderer_handle Renderer_Create(const renderer_config *Config)
 {
     arena_alloc *Arena;
     renderer *Vk;
@@ -2525,15 +1928,15 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
         Vk = Arena_Alloc(&TmpArena, sizeof(renderer));
         *Vk = (renderer) {
             .Arena = TmpArena,
-            .Profiler = Profiler,
-            .FramesInFlight = FramesInFlight,
-            .ForceTripleBuffering = ForceTripleBuffering,
+            .Profiler = Config->Profiler,
+            .FramesInFlight = Config->FramesInFlight,
+            .ForceTripleBuffering = Config->ForceTripleBuffering,
         };
         Arena = &Vk->Arena;
     }
 
 
-    VkInstance Instance = Vulkan_CreateInstance(&Vk->Instance, *Arena, AppName);
+    VkInstance Instance = Vulkan_CreateInstance(&Vk->Instance, *Arena, Config->AppName);
     DEBUG_ONLY(Vk->DebugReportCallback = Vulkan_CreateDebugCallback(Instance)); 
     VK_CHECK(Vulkan_Platform_CreateWindowSurface(Instance, NULL, &Vk->WindowSurface));
 
@@ -2546,7 +1949,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
 
         GpuContext = &Vk->GpuContext;
         Device = GpuContext->Device;
-        GpuContext->Profiler = Profiler;
+        GpuContext->Profiler = Config->Profiler;
     }
 
     /* NOTE: command pool must be created before attempting to load resources onto the gpu */
@@ -2562,7 +1965,6 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
         Vk->Arena
     );
 
-#ifdef NEW_API
     /* default/global resource group */
     {
         renderer_resource_group_config ResourceConfig = { 
@@ -2581,41 +1983,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
         ASSERT(Vk->ResourceGroupHead == Vk->GlobalResourceGroup);
     }
 
-    /* create descriptor layouts and sets */
-#if 0
-    {
-        uint TextureSamplerCountMax = 1u << 12;
-        uint UniformBufferCountMax = 1u << 12;
-        VkDescriptorPool DescriptorPool;
-        {
-            VkDescriptorPoolSize PoolSizes[] = {
-                [0] = {
-                    .descriptorCount = UniformBufferCountMax,
-                    .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                },
-                [1] = {
-                    .descriptorCount = TextureSamplerCountMax,
-                    .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                },
-            };
-
-            uint MaxDescriptorCount = UniformBufferCountMax + TextureSamplerCountMax;
-            VkDescriptorPoolCreateInfo CreateInfo = {
-                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-                .poolSizeCount = STATIC_ARRAY_SIZE(PoolSizes),
-                .pPoolSizes = PoolSizes,
-                .maxSets = MaxDescriptorCount,
-                .flags = 0,
-            };
-            VK_CHECK(vkCreateDescriptorPool(Device, &CreateInfo, NULL, &DescriptorPool));
-        }
-
-        Vk->DescriptorPool = DescriptorPool;
-    }
-#endif
-
     /* create render target  */
-    int MSAASampleCount = 4;
     {
         vk_resource_group *ResourceGroup = Vk->GlobalResourceGroup;
         Vk->RenderTarget = Vulkan_CreateRenderTarget(
@@ -2624,7 +1992,7 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
             Vk->CommandPool, 
             GpuContext, 
             &Vk->Swapchain, 
-            Vulkan_GetVkSampleCountFlags(&Vk->Gpus.Selected, MSAASampleCount)
+            VK_SAMPLE_COUNT_1_BIT
         );
 
         VkFence *Fences;
@@ -2664,32 +2032,49 @@ renderer_handle Renderer_Init(const char *AppName, int FramesInFlight, bool32 Fo
     }
 
     Renderer__InitDefaultResources(Vk);
-#else
-    /* texture handle 0 contains a pink 1x1 texture */
-    {
-        Arena_AllocDynamicArray(Arena, &Vk->TextureArray, 0, 256);
-        renderer_texture_handle Texture = Renderer_UploadTexture(Vk, (u32[]) { 0xFFFF00FF }, 1, 1, 1, RENDERER_IMAGE_FORMAT_RGBA);
-        (void)Texture;
-        ASSERT(Texture.Value == 0, "First texture");
-    }
-
-    /* initialize mesh array */
-    {
-        /* NOTE: mesh handle 0 does not contain anything */
-        Arena_AllocDynamicArray(Arena, &Vk->MeshArray, 0, 256);
-    }
-#endif
-
     ASSERT_EXPRESSION_TYPE(Vk, renderer_handle, "invalid type");
     return Vk;
 }
 
+renderer_msaa_flags Renderer_GetAvailableMSAAFlags(renderer_handle Vk)
+{
+    STATIC_ASSERT(RENDERER_MSAA_1X == (int)VK_SAMPLE_COUNT_1_BIT, "");
+    STATIC_ASSERT(RENDERER_MSAA_2X == (int)VK_SAMPLE_COUNT_2_BIT, "");
+    STATIC_ASSERT(RENDERER_MSAA_4X == (int)VK_SAMPLE_COUNT_4_BIT, "");
+    STATIC_ASSERT(RENDERER_MSAA_8X == (int)VK_SAMPLE_COUNT_8_BIT, "");
+    STATIC_ASSERT(RENDERER_MSAA_16X == (int)VK_SAMPLE_COUNT_16_BIT, "");
+    STATIC_ASSERT(RENDERER_MSAA_32X == (int)VK_SAMPLE_COUNT_32_BIT, "");
+    STATIC_ASSERT(RENDERER_MSAA_64X == (int)VK_SAMPLE_COUNT_64_BIT, "");
+    renderer_msaa_flags Flags = Vk->Gpus.Selected.Properties.limits.framebufferColorSampleCounts;
+    return Flags;
+}
 
+void Renderer_SetScreenMSAA(renderer_handle Vk, renderer_msaa_flags OneFlag)
+{
+    ASSERT(IS_POWER_OF_2(OneFlag), "Must specify only 1 RENDERER_MSAA_xxx flag to %s(): %02x", __func__, OneFlag);
+    VkSampleCountFlagBits MSAASample = Vulkan_GetVkSampleCountFlags(OneFlag);
+    if (MSAASample == Vk->RenderTarget.SampleCount)
+        return;
 
+    VkDevice Device = Vulkan_GetDevice(Vk);
+    vkm_image_info DepthBufferInfo = Vkm_GetImageInfo(&Vk->GlobalResourceGroup->GpuAllocator, Vk->RenderTarget.DepthResource);
 
-
-
-#ifdef NEW_API
+    Vk->RenderTarget.SampleCount = MSAASample;
+    vkDestroyRenderPass(Device, Vk->RenderTarget.RenderPass, NULL);
+    Vk->RenderTarget.RenderPass = Vulkan_CreateRenderPass(
+        Device, 
+        MSAASample,
+        Vk->Swapchain.ImageFormat, 
+        DepthBufferInfo.Format
+    );
+    Vulkan_ResizeRenderTarget(
+        &Vk->RenderTarget, 
+        &Vk->GlobalResourceGroup->GpuAllocator, 
+        Vk->CommandPool, 
+        &Vk->GpuContext, 
+        &Vk->Swapchain
+    );
+}
 
 internal u32 Vulkan_ResourceGroup_PushSampler(vk_resource_group *ResourceGroup, VkSampler Sampler)
 {
@@ -3184,7 +2569,6 @@ renderer_texture_handle Renderer_CreateStaticTexture(
     vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle);
 
     VkFormat ImageFormat = Vulkan_GetVkFormat(TextureConfig->Format);
-    VkDevice Device = Vulkan_GetDevice(Vk);
 
     vkm_image_handle TextureImageHandle;
     vkm_image_info TextureImageInfo;
@@ -3202,7 +2586,7 @@ renderer_texture_handle Renderer_CreateStaticTexture(
                 .Width = TextureConfig->Width, 
                 .Height = TextureConfig->Height, 
                 .MipLevels = TextureConfig->MipLevels,
-                .Samples = VK_SAMPLE_COUNT_1_BIT,
+                .Sample = VK_SAMPLE_COUNT_1_BIT,
                 .Format = ImageFormat,
                 .Tiling = VK_IMAGE_TILING_OPTIMAL,
                 .Usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -3236,10 +2620,8 @@ renderer_texture_handle Renderer_CreateStaticTexture(
         /* to shut the compiler up */
         (void)Vulkan_GenerateMipmap;
 #else
-        /* to shut the compiler up */
-        (void)Vulkan_TransitionImageLayout;
         Vulkan_GenerateMipmap(GpuContext, CommandPool, 
-            ImageFormat, Image, TextureConfig->Width, TextureConfig->Height, MipLevels
+            ImageFormat, TextureImageInfo.Image, TextureConfig->Width, TextureConfig->Height, TextureConfig->MipLevels
         );
 #endif
     }
@@ -3355,397 +2737,6 @@ renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
 }
 
 
-#else
-
-
-internal void Vulkan_TransferDataToGpuLocalMemory(
-    const vk_gpu_context *GpuContext, VkCommandPool CommandPool, 
-    vkm_buffer GpuLocalDst, const void *Src, isize SrcSizeBytes
-) {
-    /* because the staging buffer has a fixed size, we'll transfer the data by blocks.
-     * TODO: use a dedicated transfer queue */
-    Profiler_Scope(GpuContext->Profiler, "Vulkan_TransferDataToGpuLocalMemory()")
-    {
-        const vkm *Vkm = &GpuContext->VkMalloc;
-        VkBuffer DstBuffer = Vkm_Buffer_GetVkBuffer(Vkm, GpuLocalDst);
-        vkm_buffer StagingBuffer = GpuContext->StagingBuffer;
-        VkBuffer StagingBufferHandle = Vkm_Buffer_GetVkBuffer(Vkm, StagingBuffer);
-        void *StagingBufferPtr = GpuContext->StagingBufferPtr;
-        i64 StagingBufferSizeBytes = Vkm_Buffer_GetSizeBytes(StagingBuffer);
-
-        const u8 *SrcPtr = Src;
-        i64 TransferedByteCount = 0;
-        Profiler_Scope(GpuContext->Profiler, "Copy Loop")
-        {
-            while (SrcSizeBytes > 0)
-            {
-                /* copy to staging */
-                i64 TransferSize = MINIMUM(StagingBufferSizeBytes, SrcSizeBytes);
-                Profiler_Scope(GpuContext->Profiler, "memcpy()")
-                    memcpy(StagingBufferPtr, SrcPtr, TransferSize);
-
-                /* copy to dst */
-                i64 DstOffset = Vkm_Buffer_GetOffsetBytes(GpuLocalDst);
-                {
-                    VkCommandBuffer CmdBuf; 
-                    Profiler_Scope(GpuContext->Profiler, "Vulkan_BeginSingleTimeCommandBuffer()")
-                    {
-                        CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
-                    }
-                    VkBufferCopy Region = {
-                        .dstOffset = DstOffset + TransferedByteCount,
-                        .srcOffset = Vkm_Buffer_GetOffsetBytes(StagingBuffer),
-                        .size = TransferSize,
-                    };
-                    vkCmdCopyBuffer(CmdBuf, StagingBufferHandle, DstBuffer, 1, &Region);
-                    Profiler_Scope(GpuContext->Profiler, "Vulkan_EndSingleTimeCommandBuffer()")
-                    {
-                        Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
-                    }
-                }
-
-                SrcPtr += TransferSize;
-                SrcSizeBytes -= TransferSize;
-                TransferedByteCount += TransferSize;
-            }
-        }
-    }
-}
-
-renderer_mesh_handle Renderer_UploadStaticMesh(
-    renderer *Vk, 
-    const void *VertexBuffer, isize VertexCount, isize VertexSizeBytes,
-    const u32 *Indices, isize IndexCount
-) {
-    vk_gpu_context *GpuContext = &Vk->GpuContext;
-
-    isize VertexBufferSizeBytes = VertexCount * VertexSizeBytes;
-    isize IndexBufferSizeBytes = IndexCount * sizeof(Indices[0]);
-    /*
-     * So apparently, the VkBufferUsageFlags is just a suggestion, 
-     * but for certain vkCmd* to work, you'd need to just *HAVE* the appropriate flags
-     *
-     * eg: vkCmdBindIndexBuffers needs VK_BUFFER_USAGE_INDEX_BUFFER_BIT, though it can have other flags, even VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-     * */
-
-    vk_mesh Mesh = {
-        .IndexBufferSizeBytes = IndexBufferSizeBytes,
-        .VertexBufferSizeBytes = VertexBufferSizeBytes,
-        .VertexCount = VertexCount,
-        .IndexCount = IndexCount,
-
-        .VertexBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_GPU_LOCAL, VertexBufferSizeBytes),
-        .IndexBuffer = Vkm_CreateBuffer(&GpuContext->VkMalloc, VKM_MEMORY_TYPE_GPU_LOCAL, IndexBufferSizeBytes),
-    };
-    Vulkan_TransferDataToGpuLocalMemory(GpuContext, Vk->CommandPool, Mesh.VertexBuffer, VertexBuffer, VertexBufferSizeBytes);
-    Vulkan_TransferDataToGpuLocalMemory(GpuContext, Vk->CommandPool, Mesh.IndexBuffer, Indices, IndexBufferSizeBytes);
-
-    ASSERT(Vk->MeshArray.Count < Vk->MeshArray.Capacity, "TODO: more meshes");
-    u32 Handle = Vk->MeshArray.Count++;
-    Vk->MeshArray.Data[Handle] = Mesh;
-    return (renderer_mesh_handle) { Handle };
-}
-
-renderer_mesh_handle Renderer_CreateMesh(renderer *Vk, isize VertexBufferSizeBytes, isize IndexBufferSizeBytes)
-{
-    vkm_buffer VertexBuffer = Vkm_CreateBuffer(&Vk->GpuContext.VkMalloc, VKM_MEMORY_TYPE_GPU_LOCAL, VertexBufferSizeBytes);
-    vkm_buffer IndexBuffer = Vkm_CreateBuffer(&Vk->GpuContext.VkMalloc, VKM_MEMORY_TYPE_GPU_LOCAL, IndexBufferSizeBytes);
-
-    ASSERT(Vk->MeshArray.Count < Vk->MeshArray.Capacity, "TODO: more meshes");
-    u32 Handle = Vk->MeshArray.Count++;
-    Vk->MeshArray.Data[Handle] = (vk_mesh) {
-        .VertexBuffer = VertexBuffer,
-        .IndexBuffer = IndexBuffer,
-        .VertexBufferSizeBytes = VertexBufferSizeBytes,
-        .IndexBufferSizeBytes = IndexBufferSizeBytes,
-        .VertexCount = 0,
-        .IndexCount = 0,
-    };
-    return (renderer_mesh_handle) { .Value = Handle };
-}
-
-renderer_result Renderer_UpdateMesh(
-    renderer *Vk, 
-    renderer_mesh_handle Handle,
-    const void *VertexBuffer, isize VertexCount, isize VertexSizeBytes,
-    const u32 *Indices, isize IndexCount
-) {
-    if (Vk->MeshArray.Count <= Handle.Value)
-    {
-        return RENDERER_ERROR_INVALID_HANDLE;
-    }
-
-    vk_mesh *Mesh = Vk->MeshArray.Data + Handle.Value;
-    isize VertexBufferSizeBytes = VertexCount * VertexSizeBytes;
-    isize IndexBufferSizeBytes = IndexCount * sizeof(Indices[0]);
-    if (Mesh->IndexBufferSizeBytes < IndexBufferSizeBytes
-    || Mesh->VertexBufferSizeBytes < VertexBufferSizeBytes)
-    {
-        return RENDERER_ERROR_OUT_OF_MEMORY;
-    }
-
-    Mesh->IndexCount = IndexCount;
-    Mesh->VertexCount = VertexCount;
-    Vulkan_TransferDataToGpuLocalMemory(&Vk->GpuContext, Vk->CommandPool, Mesh->VertexBuffer, VertexBuffer, VertexBufferSizeBytes);
-    Vulkan_TransferDataToGpuLocalMemory(&Vk->GpuContext, Vk->CommandPool, Mesh->IndexBuffer, Indices, IndexBufferSizeBytes);
-    return RENDERER_SUCCESS;
-}
-
-renderer_texture_handle Renderer_UploadTexture(
-    renderer *Vk, 
-    const void *Data, u32 Width, u32 Height, u32 MipLevels,
-    renderer_image_format Format
-) {
-    VkFormat ImageFormat = Vulkan_GetVkFormat(Format);
-    isize ImageSize = Width * Height * sizeof(u32);
-    vk_gpu_context *GpuContext = &Vk->GpuContext;
-    VkDevice Device = GpuContext->Device;
-    VkCommandPool CommandPool = Vk->CommandPool;
-
-    /* create texture on the gpu */
-    vkm_image_handle TextureImageHandle;
-    VkImage Image;
-    {
-        vkm_buffer StagingBuffer = GpuContext->StagingBuffer;
-        isize StagingBufferSize = Vkm_Buffer_GetSizeBytes(StagingBuffer);
-        (void)StagingBufferSize;
-        ASSERT(ImageSize < StagingBufferSize, "Image too large");
-        memcpy(GpuContext->StagingBufferPtr, Data, ImageSize);
-
-        TextureImageHandle = Vkm_CreateImage(
-            &GpuContext->VkMalloc,
-            Width, Height, MipLevels,
-            VK_SAMPLE_COUNT_1_BIT,
-            ImageFormat,
-            VK_IMAGE_TILING_OPTIMAL, /* optimal for shaders to access */
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT
-        );
-        Image = Vkm_Image_Get(&GpuContext->VkMalloc, TextureImageHandle).Handle;
-        Vulkan_TransitionImageLayout(GpuContext, CommandPool,
-            Image, 
-            ImageFormat, 
-            VK_IMAGE_LAYOUT_UNDEFINED, 
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
-            MipLevels
-        );
-        Vulkan_CopyBufferToImage(GpuContext, CommandPool,
-            Vkm_Buffer_GetVkBuffer(&GpuContext->VkMalloc, StagingBuffer),
-            Vkm_Buffer_GetOffsetBytes(StagingBuffer),
-            Image, Width, Height, 
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-        );
-#if 1
-        Vulkan_TransitionImageLayout(GpuContext, CommandPool,
-            Image, 
-            ImageFormat,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 
-            MipLevels
-        );
-        /* to shut the compiler up */
-        (void)Vulkan_GenerateMipmap;
-#else
-        /* to shut the compiler up */
-        (void)Vulkan_TransitionImageLayout;
-        Vulkan_GenerateMipmap(GpuContext, CommandPool, 
-            ImageFormat, Image, Width, Height, MipLevels
-        );
-#endif
-    }
-
-    /* create an image view to the texture */
-    VkImageView TextureImageView = Vulkan_CreateImageView(Device, Image, ImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, MipLevels);
-
-    /* create a sampler */
-    VkSampler Sampler;
-    {
-        VkBool32 AnisotropyFilteringSupported = VK_FALSE;
-        float AnisotropyFilteringMax = 1.0f;
-        {
-            VkPhysicalDevice Gpu = Vulkan_GetPhysicalDevice(Vk);
-            VkPhysicalDeviceFeatures Features;
-            VkPhysicalDeviceProperties Properties;
-            vkGetPhysicalDeviceFeatures(Gpu, &Features);
-            vkGetPhysicalDeviceProperties(Gpu, &Properties);
-            AnisotropyFilteringSupported = Features.samplerAnisotropy;
-            AnisotropyFilteringMax = Properties.limits.maxSamplerAnisotropy;
-        }
-
-        VkSamplerCreateInfo SamplerCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-            /* bilinear filtering:
-             *  minification:  texels are bigger than screen pixels 
-             *  magnification: screen pixels are bigger than texels */
-            .magFilter = VK_FILTER_LINEAR,
-            .minFilter = VK_FILTER_LINEAR,
-            /* for u,v,(w) coords that are outside of the texture (default 0..1) */
-            .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-            .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-            .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-            .anisotropyEnable = AnisotropyFilteringSupported,
-            .maxAnisotropy = AnisotropyFilteringMax,
-            /* when sampling out of bound for VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER */
-            .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-            .unnormalizedCoordinates = VK_FALSE,
-            /* for filtering */
-            .compareEnable = VK_FALSE,
-            .compareOp = VK_COMPARE_OP_ALWAYS,
-            /* mipmapping */
-            .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-            .mipLodBias = 0.0f,
-            .minLod = 0.0f,
-            .maxLod = VK_LOD_CLAMP_NONE,
-        };
-        VK_CHECK(vkCreateSampler(Device, &SamplerCreateInfo, NULL, &Sampler));
-    }
-
-    /* push texture */
-    renderer_texture_handle TextureHandle = { 0 };
-    if (Vk->TextureArray.Count < Vk->TextureArray.Capacity)
-    {
-        TextureHandle.Value = Vk->TextureArray.Count;
-        Vk->TextureArray.Data[TextureHandle.Value] = (vk_texture) {
-            .Image = TextureImageHandle,
-            .ImageView = TextureImageView,
-            .Sampler = Sampler,
-            /* TODO: store this width and height as the width and height capacity of this vkm_image in the texture */
-        };
-        Vk->TextureArray.Count++;
-    }
-    else
-    {
-        ASSERT(false, "Run out of memory for texture");
-    }
-    return TextureHandle;
-}
-
-void Renderer_CreateGraphicsPipelines(
-    renderer *Vk, 
-    isize UniformBufferCapacity, 
-    int MSAASampleCount,
-    int GraphicsPipelineCount,
-    const renderer_graphics_pipeline_config *GraphicsPipelineConfigs, 
-    renderer_graphics_pipeline_handle *OutGraphicsPipelineHandle
-) {
-    vk_gpu_context *GpuContext = &Vk->GpuContext;
-    VkDevice Device = GpuContext->Device;
-
-
-    /* swapchain init */
-    {
-        int Width = Vk->Swapchain.Extent.width;
-        int Height = Vk->Swapchain.Extent.height;
-
-        Vk->MSAASample = Vulkan_GetVkSampleCountFlags(&Vk->Gpus.Selected, MSAASampleCount);
-        {
-            /* HACK: initially, we create depth and msaa resolve buffers with width and height of the monitor 
-             *  then resize them to the current swapchain's size. This makes sure that when the window is resized, 
-             *  the ColorResource and DepthBuffer will reuse its underlying VkDeviceMemory. 
-             *  This might not work if the user has multiple monitors.
-             * */
-            platform_window_dimensions Max = Platform_Get(MonitorDimensions);
-            Vk->ColorResource = Vulkan_CreateColorResource(GpuContext, Vk->MSAASample, Vk->Swapchain.ImageFormat, Max.Width, Max.Height);
-            Vk->DepthBuffer = Vulkan_CreateDepthBuffer(GpuContext, Vk->CommandPool, Vk->MSAASample, Max.Width, Max.Height);
-            Vk->ColorResource = Vkm_ImageAndView_Resize(&GpuContext->VkMalloc, Vk->ColorResource, Width, Height);
-            Vk->DepthBuffer = Vulkan_ResizeDepthBuffer(GpuContext, Vk->CommandPool, Vk->DepthBuffer, Width, Height);
-        }
-        Vk->RenderPass = Vulkan_CreateRenderPass(Device, Vk->MSAASample, Vk->Swapchain.ImageFormat, 
-            Vkm_Image_Get(&GpuContext->VkMalloc, Vk->DepthBuffer.ImageHandle).Format
-        );
-        Vulkan_CreateSwapchainImageViewAndFramebuffers(
-            &Vk->SwapchainImage, 
-            &Vk->Swapchain, 
-            GpuContext, 
-            Vk->RenderPass, 
-            Vk->ColorResource.ImageView, 
-            Vk->DepthBuffer.ImageView, 
-            (platform_framebuffer_dimensions) { 
-                .Width = Width,
-                .Height = Height,
-            },
-            true,
-            &Vk->Arena
-        );
-    }
-
-    {
-        int UniformBufferCount = 1;
-        int TextureCount = Vk->TextureArray.Count;
-        int UniformDescriptorPoolSize = Vk->FramesInFlight * UniformBufferCount;
-        int TextureDescriptorPoolSize = Vk->FramesInFlight * TextureCount;
-        Vk->DescriptorSetLayout = Vulkan_CreateDescriptorSetLayout(Device, UniformBufferCount, TextureCount);
-        Vk->DescriptorPool = Vulkan_CreateDescriptorPool(Device, Vk->FramesInFlight, UniformDescriptorPoolSize, TextureDescriptorPoolSize);
-    }
-
-    Arena_AllocDynamicArray(&Vk->Arena, &Vk->UniformBuffer, 0, UniformBufferCapacity);
-    Vk->FrameData = Vulkan_CreateFrameData(
-        GpuContext, 
-        Vk->CommandPool,
-        Vk->DescriptorPool, 
-        Vk->DescriptorSetLayout, 
-        Vk->FramesInFlight, 
-        &Vk->TextureArray,
-        UniformBufferCapacity,
-        &Vk->Arena
-    );
-
-    Arena_AllocDynamicArray(&Vk->Arena, &Vk->GraphicsPipelines, GraphicsPipelineCount + 1, GraphicsPipelineCount + 1);
-    {
-        for (int i = 0; i < GraphicsPipelineCount; i++)
-        {
-            const renderer_graphics_pipeline_config *Config = GraphicsPipelineConfigs + i;
-            renderer_graphics_pipeline_handle Handle = { i + 1 };
-            bool32 EnableMSAA = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_MSAA);
-            UNREACHABLE_IF(!EnableMSAA && MSAASampleCount != 1, 
-                "Must have RENDERER_GFXFT_MSAA if MSAA Sample count != 1"
-            );
-
-            VkCullModeFlags CullMode = VK_CULL_MODE_NONE; 
-            VkFrontFace FrontFace = 0;
-            if (IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_BACKFACE_CULLING))
-            {
-                CullMode = VK_CULL_MODE_BACK_BIT;
-                switch (Config->CullingDirection)
-                {
-                case RENDERER_CULLING_CLOCKWISE: FrontFace = VK_FRONT_FACE_CLOCKWISE; break;
-                case RENDERER_CULLING_COUNTER_CLOCKWISE: FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; break;
-                }
-            }
-
-            OutGraphicsPipelineHandle[i] = Handle;
-            Vk->GraphicsPipelines.Data[Handle.Value] = Vulkan_CreateGraphicsPipeline(
-                Vk->GpuContext.Device, 
-                Vk->RenderPass, 
-                &(vk_graphics_pipeline_config) {
-                    .CullMode = CullMode,
-                    .CullModeFrontFace = FrontFace,
-                    .EnableBlending = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_BLENDING),
-                    .EnableDepthTesting = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_Z_BUFFER), 
-                    .EnableMSAA = EnableMSAA, 
-                    .MSAASampleCount = Vk->MSAASample,
-                    .EnableSampleShading = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_SAMPLE_SHADING), 
-                    .SampleShadingMin = Config->SampleShadingMin,
-                },
-                &Vk->DescriptorSetLayout, 1, 
-                Config->FragShaderCode, Config->FragShaderCodeSizeBytes, 
-                Config->VertShaderCode, Config->VertShaderCodeSizeBytes, 
-                Config->VertexDescription, 
-                Vk->Arena
-            );
-        }
-    }
-}
-
-void Renderer_UpdateUniformBuffer(renderer *Vk, const void *Data, isize SizeBytes) 
-{
-    /* don't actually update now because the uniform might be in use by the gpu, 
-     * wait until draw time to update, for now copy it into a tmp buffer */
-    ASSERT(SizeBytes <= Vk->UniformBuffer.Capacity, "Data too big for uniform buffer");
-    memcpy(Vk->UniformBuffer.Data, Data, SizeBytes);
-    Vk->UniformBuffer.Count = SizeBytes;
-    Vk->ShouldUpdateUniformBuffer = true;
-}
-#endif
 
 
 bool32 Renderer_IsMSAASampleCountSupported(renderer_handle Vk, int SampleCount)
@@ -3772,7 +2763,6 @@ void Renderer_Destroy(renderer *Vk)
     VkDevice Device = GpuContext->Device;
     vkDeviceWaitIdle(Device);
 
-#ifdef NEW_API
     for (vk_resource_group *ResourceGroup = Vk->ResourceGroupHead;
         ResourceGroup;
         ResourceGroup = ResourceGroup->Next)
@@ -3785,14 +2775,16 @@ void Renderer_Destroy(renderer *Vk)
         vkDestroySemaphore(Device, Vk->RenderFrame.GpuWaitForRenderTarget[i], NULL);
         vkDestroyFence(Device, Vk->RenderFrame.CpuWaitThisFrame[i], NULL);
     }
+
     for (uint i = 0; i < Vk->RenderTarget.ImageCount; i++)
     {
         vkDestroySemaphore(Device, Vk->RenderTarget.GpuWaitForRenderFrame[i], NULL);
         vkDestroyImageView(Device, Vk->RenderTarget.SwapchainImageViews[i], NULL);
         vkDestroyFramebuffer(Device, Vk->RenderTarget.Framebuffers[i], NULL);
     }
-    vkDestroySwapchainKHR(Device, Vk->Swapchain.Handle, NULL);
     vkDestroyRenderPass(Device, Vk->RenderTarget.RenderPass, NULL);
+
+    vkDestroySwapchainKHR(Device, Vk->Swapchain.Handle, NULL);
     vkDestroyCommandPool(Device, Vk->CommandPool, NULL);
     vkDestroyDevice(Device, NULL);
     vkDestroySurfaceKHR(Vk->Instance, Vk->WindowSurface, NULL);
@@ -3800,50 +2792,6 @@ void Renderer_Destroy(renderer *Vk)
         g_VkDestroyDebugReportCallbackEXT(Vk->Instance, Vk->DebugReportCallback, NULL);
     );
     vkDestroyInstance(Vk->Instance, NULL);
-#else
-    VkInstance Instance = Vk->Instance;
-    vk_frame_data *Frame = &Vk->FrameData;
-    for (int i = 0; i < Vk->TextureArray.Count; i++)
-    {
-        vk_texture *Texture = Vk->TextureArray.Data + i;
-        /* TODO: proper cleanup */
-#if 0
-        Vulkan_DestroyImage(Device, &Texture->DeviceMemory);
-#endif
-        vkDestroyImageView(Device, Texture->ImageView, NULL);
-        vkDestroySampler(Device, Texture->Sampler, NULL);
-    }
-    for (int i = 0; i < Vk->FramesInFlight; i++)
-    {
-        /* nothing to do, Vkm_Destroy will deallocate all buffers */
-        (void)Frame->UniformBufferArray;
-        vkDestroyFence(Device, Frame->InFlightFenceArray[i], NULL);
-        vkDestroySemaphore(Device, Frame->ImageAvailableSemaphoreArray[i], NULL);
-    }
-    vkDestroyDescriptorPool(Device, Vk->DescriptorPool, NULL);
-    vkDestroyDescriptorSetLayout(Device, Vk->DescriptorSetLayout, NULL);
-    /* nothing to do, Vkm_Destroy will deallocate all buffers */
-    Vulkan_DestroySwapchain(Device, &Vk->Swapchain); 
-    Vulkan_DestroySwapchainImageAndFramebuffer(Device, &Vk->SwapchainImage, true);
-    /* TODO: proper cleanup, defer this to the vkm */
-    {
-        vkDestroyImageView(Device, Vk->DepthBuffer.ImageView, NULL);
-        vkDestroyImageView(Device, Vk->ColorResource.ImageView, NULL);
-    }
-    vkDestroyCommandPool(Device, Vk->CommandPool, NULL);
-    dynamic_array_foreach(&Vk->GraphicsPipelines, i)
-    {
-        Vulkan_DestroyGraphicsPipeline(Device, i);
-    }
-    vkDestroyRenderPass(Device, Vk->RenderPass, NULL);
-    vkDestroySurfaceKHR(Instance, Vk->WindowSurface, NULL);
-    Vkm_Destroy(&GpuContext->VkMalloc);
-    vkDestroyDevice(Device, NULL);
-    DEBUG_ONLY(
-        g_VkDestroyDebugReportCallbackEXT(Instance, Vk->DebugReportCallback, NULL);
-    );
-    vkDestroyInstance(Instance, NULL);
-#endif
 
     /* arena owns Vk */
     Arena_Destroy(&Vk->Arena);

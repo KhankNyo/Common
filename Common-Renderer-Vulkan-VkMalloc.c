@@ -730,13 +730,13 @@ vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config)
     int MipLevels = Config->MipLevels == 0? 1 : Config->MipLevels;
     ASSERT(Config->Width, "Width cannot be 0");
     ASSERT(Config->Height, "Height cannot be 0");
-    ASSERT(Config->Samples, "Samples cannot be 0");
+    ASSERT(Config->Sample, "Samples cannot be 0");
     ASSERT(Config->Format, "Format cannot be 0 (VK_FORMAT_UNDEFINED)");
     ASSERT(Config->Usage, "Usage cannot be 0");
     ASSERT(Config->Aspect, "Aspect cannot be 0 (VK_ASPECT_NONE)");
 
     VkImage Image = Vkm__CreateVkImage(Vkm, 
-        Config->Tiling, Config->Usage, Config->Samples, Config->Format, 
+        Config->Tiling, Config->Usage, Config->Sample, Config->Format, 
         Config->Width, Config->Height, MipLevels
     );
 
@@ -765,7 +765,7 @@ vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config)
 
         .Usage = Config->Usage,
         .Format = Config->Format,
-        .Samples = Config->Samples,
+        .Sample = Config->Sample,
         .Tiling = Config->Tiling,
         .Aspect = Config->Aspect,
 
@@ -806,7 +806,7 @@ vkm_buffer_handle Vkm_ResizeBuffer(vkm *Vkm, vkm_buffer_handle BufferHandle, i64
     return BufferHandle;
 }
 
-vkm_image_handle Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 NewWidth, u16 NewHeight)
+vkm_image_handle Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, const vkm_resize_image_config *Config)
 {
     vkm__unpacked_handle Unpacked = Vkm__UnpackHandle(ImageHandle.Value);
     ASSERT(Unpacked.Index < Vkm->ImagePool.Count, "Invalid handle");
@@ -815,10 +815,13 @@ vkm_image_handle Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 New
     vkm_device_memory *DeviceMemory = &Vkm->DeviceMemory.Data[Entry->DeviceMemoryIndex];
     VkImage OldImage = Entry->Image;
     VkImageView OldImageView = Entry->ImageView;
+    VkSampleCountFlagBits Sample = Config->Sample? Config->Sample : Entry->Sample;
+    VkFormat Format = Config->Format? Config->Format : Entry->Format;
+    uint MipLevels = Config->MipLevels? Config->MipLevels : Entry->MipLevels;
 
     VkImage NewImage = Vkm__CreateVkImage(Vkm, 
-        Entry->Tiling, Entry->Usage, Entry->Samples, Entry->Format, 
-        NewWidth, NewHeight, Entry->MipLevels
+        Entry->Tiling, Entry->Usage, Sample, Format, 
+        Config->Width, Config->Height, MipLevels
     );
 
     VkMemoryRequirements Required = Vkm__GetImageMemoryRequirements(Vkm, NewImage, Unpacked.SizeBytes);
@@ -836,7 +839,7 @@ vkm_image_handle Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 New
         Vkm__InsertNode(Vkm, &Vkm->DeviceMemoryNodeFree[NodeToDeallocate->MemoryTypeIndex], NodeToDeallocate);
 
         /* create new device memory */
-        Required.size *= 2;
+        Required.size = Required.size * 1.5;
         ASSERT(Required.size < (u64)INT32_MAX*VKM_MIN_ALIGNMENT);
         vkm_device_memory_node *NewNode = Vkm__AllocateNode(Vkm, Required, VKM_IMAGE_MEMORY_PROPERTY);
         i64 OffsetBytes = NewNode->OffsetAligned * VKM_MIN_ALIGNMENT;
@@ -848,10 +851,13 @@ vkm_image_handle Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 New
     }
 
     VkImageView NewImageView = Vkm__CreateImageView(Vkm, 
-        NewImage, Entry->Format, Entry->Aspect, Entry->MipLevels
+        NewImage, Format, Entry->Aspect, MipLevels
     );
-    Entry->Width = NewWidth;
-    Entry->Height = NewHeight;
+    Entry->Sample = Sample;
+    Entry->Format = Format;
+    Entry->MipLevels = MipLevels;
+    Entry->Width = Config->Width;
+    Entry->Height = Config->Height;
     Entry->Image = NewImage;
     Entry->ImageView = NewImageView;
     vkDestroyImage(Vkm->Device, OldImage, NULL);
@@ -939,7 +945,7 @@ vkm_image_info Vkm_GetImageInfo(const vkm *Vkm, vkm_image_handle ImageHandle)
 
         .Usage = Entry->Usage,
         .Format = Entry->Format,
-        .Samples = Entry->Samples,
+        .Sample = Entry->Sample,
         .Tiling = Entry->Tiling,
         .Aspect = Entry->Aspect,
 

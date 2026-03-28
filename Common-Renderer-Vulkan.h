@@ -58,11 +58,10 @@ typedef_struct(vk_device_memory_image);
 typedef_struct(vk_swapchain_image);
 typedef_struct(vk_mesh);
 typedef_struct(vk_uniform_buffer);
-
-
-#ifdef NEW_API
 typedef_struct(vk_render_target);
 typedef_struct(vk_render_frame);
+typedef_struct(vk_resource_group);
+
 
 struct vk_texture
 {
@@ -70,14 +69,6 @@ struct vk_texture
     VkImageView ImageView;
     VkSampler SamplerReference;
 };
-#else
-struct vk_texture
-{
-    vkm_image_handle Image;
-    VkImageView ImageView;
-    VkSampler Sampler;
-};
-#endif
 
 struct vk_graphics_pipeline
 {
@@ -85,7 +76,6 @@ struct vk_graphics_pipeline
     VkPipeline Handle;
 };
 
-typedef_struct(vk_resource_group);
 
 
 struct vk_mesh
@@ -191,56 +181,17 @@ struct renderer
         VkFormat ImageFormat;
         VkPresentModeKHR PresentMode;
     } Swapchain;
-#ifndef NEW_API
-    struct vk_swapchain_image {
-        u32 Count;
-        VkImage *Array;
-        VkImageView *ViewArray;
-        VkFramebuffer *FramebufferArray;
-
-        VkSemaphore *RenderFinishedSemaphoreArray;
-    } SwapchainImage;
-
-    VkRenderPass RenderPass;
-
-    /* renderer_graphics_pipeline_handle */
-    dynamic_array(vk_graphics_pipeline) GraphicsPipelines;
-
-    VkCommandPool CommandPool;
-    VkDescriptorSetLayout DescriptorSetLayout;
-    VkDescriptorPool DescriptorPool;
-    struct vk_frame_data
-    {
-        VkFence *InFlightFenceArray;
-        VkSemaphore *ImageAvailableSemaphoreArray;
-        VkCommandBuffer *CommandBufferArray;
-        VkDescriptorSet *DescriptorSetArray;
-        vkm_buffer *UniformBufferArray;
-        void **UniformMappedMemoryArray;
-    } FrameData;
-    int CurrentFrame;
-    int FramesInFlight;
-
-    vkm_image_and_view DepthBuffer;
-    vkm_image_and_view ColorResource;
-
-    VkSampleCountFlagBits MSAASample;
-
-    vk_texture_array TextureArray;
-    dynamic_array(u8) UniformBuffer;
-#endif
     bool8 ShouldUpdateUniformBuffer;
     bool8 IsResized;
     bool8 ForceTripleBuffering;
 
 
-#ifdef NEW_API
     vk_resource_group *ResourceGroupHead, 
                       *ResourceGroupFreeSlots, 
                       *GlobalResourceGroup;
 
     struct vk_render_target {
-        VkSampleCountFlags SampleCount;
+        VkSampleCountFlagBits SampleCount;
 
         u32 ImageCount;
         VkFramebuffer *Framebuffers;
@@ -261,10 +212,6 @@ struct renderer
     } RenderFrame;
     int CurrentFrame;
     int FramesInFlight;
-#else
-    /* renderer_mesh_handle */
-    dynamic_array(vk_mesh) MeshArray;
-#endif
 
     profiler *Profiler;
 };

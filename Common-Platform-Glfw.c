@@ -288,7 +288,7 @@ int main(void)
     }
     App_OnDeinit(&g_App);
     {
-        (void)eprintfln("Free: %d, Alloc: %d, Alloced: %zdmb", AllocatorData.FreeCount, AllocatorData.AllocCount, AllocatorData.MemSizeAlloced / MB);
+        (void)eprintfln("\nFree: %d, Alloc: %d, Alloced: %zd KB", AllocatorData.FreeCount, AllocatorData.AllocCount, AllocatorData.MemSizeAlloced / KB);
         pthread_mutex_destroy(&AllocatorData.Mutex);
     }
 
@@ -586,7 +586,7 @@ Error:
 
 VkResult Vulkan_Platform_CreateWindowSurface(VkInstance Instance, VkAllocationCallbacks *AllocCallback, VkSurfaceKHR *OutWindowSurface)
 {
-    return glfwCreateWindowSurface(Instance, g_Window, AllocCallback, OutWindowSurface);
+    return glfwCreateWindowSurface(Instance, g_Window, AllocCallback, (void *)OutWindowSurface);
 }
 
 

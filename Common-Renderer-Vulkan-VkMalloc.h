@@ -26,6 +26,7 @@ typedef_struct(vkm_device_memory);
 typedef_struct(vkm_image_info);
 typedef_struct(vkm_image_pool_entry);
 typedef_struct(vkm_buffer_chunk);
+typedef_struct(vkm_resize_image_config);
 typedef dynamic_array(vkm_buffer_pool_entry) vkm_buffer_pool;
 typedef dynamic_array(vkm_image_pool_entry) vkm_image_pool;
 
@@ -101,7 +102,7 @@ struct vkm_image_pool_entry
 
     VkImageUsageFlags Usage;
     VkFormat Format;
-    VkSampleCountFlagBits Samples;
+    VkSampleCountFlagBits Sample;
     VkImageTiling Tiling;
     VkImageAspectFlags Aspect;
 
@@ -154,7 +155,7 @@ struct vkm_image_info
 
     VkImageUsageFlags Usage;
     VkFormat Format;
-    VkSampleCountFlagBits Samples;
+    VkSampleCountFlagBits Sample;
     VkImageTiling Tiling;
     VkImageAspectFlags Aspect;
 
@@ -181,11 +182,19 @@ struct vkm_image_config
     u16 Width;
     u16 Height;
     u16 MipLevels;                  /* 0 implies default mip level (1) */
-    VkSampleCountFlags Samples;
+    VkSampleCountFlags Sample;
     VkFormat Format;
     VkImageUsageFlags Usage;
     VkImageTiling Tiling;
     VkImageAspectFlags Aspect;
+};
+struct vkm_resize_image_config
+{
+    VkSampleCountFlagBits Sample;   /* 0 implies the image's old sample */
+    VkFormat Format;                /* VK_FORMAT_UNDEFINED (0) implies the image's old format */
+    u16 MipLevels;                  /* 0 implies the image's old mip levels */
+    u16 Width;
+    u16 Height;
 };
 struct vkm_buffer_config
 {
@@ -200,7 +209,7 @@ void Vkm_Destroy(vkm *Vkm);
 vkm_buffer_handle Vkm_CreateBuffer(vkm *Vkm, const vkm_buffer_config *Config);
 vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config);
 
-vkm_image_handle Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, u16 NewWidth, u16 NewHeight);
+vkm_image_handle Vkm_ResizeImage(vkm *Vkm, vkm_image_handle ImageHandle, const vkm_resize_image_config *Config);
 vkm_buffer_handle Vkm_ResizeBuffer(vkm *Vkm, vkm_buffer_handle BufferHandle, i64 NewSizeBytes);
 
 /* map will only succeed if the buffer is VKM_BUFFER_TYPE_STAGING or VKM_BUFFER_TYPE_UBO */
