@@ -19,7 +19,7 @@ internal void InitRenderer(app *App, const char *AppName);
 void App_OnInit(app *App)
 {
     const char *AppName = "Hello";
-    Platform_Set(TargetFPS, 60);
+    Platform_Set(TargetFPS, 240);
     Platform_Set(WindowTitle, AppName);
     Platform_Set(VSyncEnable, true);
 
@@ -89,7 +89,7 @@ internal void InitRenderer(app *App, const char *AppName)
     /* configure */
     {
         renderer_msaa_flags Samples = Renderer_GetAvailableMSAAFlags(App->Renderer);
-        if (Samples & RENDERER_MSAA_4X)
+        if ((Samples & RENDERER_MSAA_4X))
         {
             Renderer_SetScreenMSAA(App->Renderer, RENDERER_MSAA_4X);
         }
@@ -98,12 +98,7 @@ internal void InitRenderer(app *App, const char *AppName)
     /* create resource group */
     {
         renderer_resource_group_config Config = {
-            .CpuBufferPoolSizeBytes = 4096,
-            .GpuBufferPoolSizeBytes = 4096,
-
             .UniformBufferBinding = 0,
-            .UniformBufferSizeBytes = 1,
-
             .TextureArrayBinding = 1,
         };
         App->ResourceGroup = Renderer_CreateResourceGroup(App->Renderer, &Config);

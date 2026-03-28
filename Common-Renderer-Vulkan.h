@@ -13,6 +13,8 @@
 #include "Common-Vulkan.h"
 #include "Common-Renderer-Vulkan-VkMalloc.h"
 
+#include "Platform-Core.h"
+
 
 /* TODO: move this somewhere else */
 #define VkDynamicArray_ResizeCapacity(p_freelist, p_da, isize_new_capacity) do {\
@@ -153,11 +155,23 @@ struct vk_resource_group
     VkDescriptorSet *DescriptorSets;
 };
 
+typedef_struct(vk_update_resource);
+struct vk_update_resource
+{
+    vk_update_resource *Next;
+    void **UniformBuffersDst;
+    void *UniformBufferSrc;
+    isize UniformBufferSizeBytes;
+};
+
+
 struct renderer
 {
     arena_alloc Arena; /* owns the renderer */
 
     VkInstance Instance;
+
+    PFN_vkDestroyDebugReportCallbackEXT VkDestroyDebugReportCallback;
     VkDebugReportCallbackEXT DebugReportCallback;
     VkSurfaceKHR WindowSurface;
     struct vk_physical_devices {
@@ -174,6 +188,16 @@ struct renderer
 
         profiler *Profiler;
     } GpuContext;
+    bool8 IsResized;
+    bool8 ForceTripleBuffering;
+
+    vk_resource_group *ResourceGroupHead, 
+                      *ResourceGroupFreeSlots, 
+                      *GlobalResourceGroup;
+    vk_update_resource *UpdateResourceHead,
+                       *UpdateResourceFree;
+
+    platform_thread_handle RecreateSwapchainAndRenderTargetThread;
     struct vk_swapchain { 
         VkSwapchainKHR Handle;
         int Width;
@@ -181,14 +205,6 @@ struct renderer
         VkFormat ImageFormat;
         VkPresentModeKHR PresentMode;
     } Swapchain;
-    bool8 ShouldUpdateUniformBuffer;
-    bool8 IsResized;
-    bool8 ForceTripleBuffering;
-
-
-    vk_resource_group *ResourceGroupHead, 
-                      *ResourceGroupFreeSlots, 
-                      *GlobalResourceGroup;
 
     struct vk_render_target {
         VkSampleCountFlagBits SampleCount;

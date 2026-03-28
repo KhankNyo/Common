@@ -30,7 +30,6 @@ typedef_struct(renderer_resource_group_config);
 typedef_struct(renderer_texture_config);
 typedef_struct(renderer_mesh_config);
 typedef_struct(renderer_sampler_config);
-typedef_struct(renderer_uniform_buffer_config);
 typedef_struct(renderer_config);
 
 typedef renderer *renderer_handle;
@@ -39,7 +38,6 @@ typedef handle(u64) renderer_resource_group_handle;
 typedef handle(u64) renderer_sampler_handle;
 typedef handle(u64) renderer_mesh_handle;
 typedef handle(u64) renderer_texture_handle;
-typedef handle(u64) renderer_uniform_buffer_handle;
 
 
 typedef enum 
@@ -111,8 +109,7 @@ struct renderer_graphics_pipeline_config
     const u8 *VertShaderCode;
     isize VertShaderCodeSizeBytes; 
 
-    const struct renderer_vertex_description
-    {
+    const struct renderer_vertex_description {
         int Stride;
         int Binding;
         int AttribCount;
@@ -296,7 +293,7 @@ void Renderer_UpdateMutableMesh(
 
 void Renderer_UpdateUniformBuffer(
     renderer_handle Renderer,
-    renderer_uniform_buffer_handle UniformBuffer,
+    renderer_resource_group_handle ResourceGroup,
     const void *Data, isize SizeBytes
 );
 

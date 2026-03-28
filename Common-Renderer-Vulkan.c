@@ -11,7 +11,15 @@
 #include "Common-Vulkan.h"
 
 
+#define VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT (VKM_MAX_BUFFER_INDEX+1) /* must be powers of 2 for pointer tagging */
+STATIC_ASSERT(sizeof(vk_resource_group) >= VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT, "vk_resource_group needs to be big for pointer tagging");
+STATIC_ASSERT(IS_POWER_OF_2(VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT), "must be powers of 2 for pointer tagging");
+
 typedef_struct(vk_vertex_description);
+typedef_struct(vk_graphics_pipeline_config);
+typedef_struct(vk_resource_group_and_index);
+
+
 
 
 typedef enum 
@@ -30,7 +38,7 @@ struct vk_vertex_description
     int AttribCount;
 };
 
-typedef struct 
+struct vk_graphics_pipeline_config
 {
     bool8 EnableMSAA;
     VkSampleCountFlags MSAASampleCount;
@@ -47,32 +55,15 @@ typedef struct
     float DepthBoundsTestingMin, DepthBoundsTestingMax;
 
     bool8 EnableBlending;
-} vk_graphics_pipeline_config;
-
-
-
-internal const char *g_VkValidationLayerNames[] = {
-    "VK_LAYER_KHRONOS_validation", 
 };
-internal const char *g_VkDeviceExtensionNames[] = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-    VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
-};
-internal PFN_vkCreateDebugReportCallbackEXT g_VkCreateDebugReportCallbackEXT;
-internal PFN_vkDestroyDebugReportCallbackEXT g_VkDestroyDebugReportCallbackEXT;
 
-
-
-
-#define VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT (VKM_MAX_BUFFER_INDEX+1) /* must be powers of 2 for pointer tagging */
-STATIC_ASSERT(sizeof(vk_resource_group) >= VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT, "vk_resource_group needs to be big for pointer tagging");
-STATIC_ASSERT(IS_POWER_OF_2(VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT), "must be powers of 2 for pointer tagging");
-
-typedef struct 
+struct vk_resource_group_and_index
 {
     vk_resource_group *ResourceGroup;
     u32 Handle;
-} vk_resource_group_and_index;
+};
+
+
 
 
 force_inline u64 Vulkan_ResourceGroup_MakeHandle(vk_resource_group *ResourceGroup, u32 ItemIndex)
@@ -152,7 +143,6 @@ internal VkBool32 Vulkan_DebugCallback(
     {
         Vulkan_LogLn("\nWARNING: [%s] Code %d : %s", pLayerPrefix, MsgCode, Msg);
     }
-    UNREACHABLE();
     return VK_FALSE;
 }
 
@@ -184,31 +174,35 @@ force_inline VkSampleCountFlagBits Vulkan_GetVkSampleCountFlags(renderer_msaa_fl
     }
 }
 
-internal VkDebugReportCallbackEXT Vulkan_CreateDebugCallback(VkInstance Instance)
-{
+internal VkDebugReportCallbackEXT Vulkan_CreateDebugCallback(
+    VkInstance Instance, 
+    PFN_vkDestroyDebugReportCallbackEXT *OutVkDestroyDebugReportCallback
+) {
     VkDebugReportCallbackEXT DebugReportCallback = { 0 };
 
-    g_VkCreateDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(
-            Instance, "vkCreateDebugReportCallbackEXT"
-        );
-    g_VkDestroyDebugReportCallbackEXT = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(
-            Instance, "vkDestroyDebugReportCallbackEXT"
-        );
+    PFN_vkCreateDebugReportCallbackEXT VkCreateDebugReportCallback = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(
+        Instance, "vkCreateDebugReportCallbackEXT"
+    );
+    *OutVkDestroyDebugReportCallback = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(
+        Instance, "vkDestroyDebugReportCallbackEXT"
+    );
 
     VkDebugReportCallbackCreateInfoEXT CreateInfo = {
         .sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT,
         .pfnCallback = (PFN_vkDebugReportCallbackEXT) Vulkan_DebugCallback,
         .flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT,
     };
-    if (g_VkCreateDebugReportCallbackEXT(Instance, &CreateInfo, NULL, &DebugReportCallback) != VK_SUCCESS) 
+    if (VkCreateDebugReportCallback(Instance, &CreateInfo, NULL, &DebugReportCallback) != VK_SUCCESS) 
         Vulkan_LogLn("Failed to create debug callback.");
     else Vulkan_LogLn("Created debug callback.");
 
     return DebugReportCallback;
 }
 
-internal VkInstance Vulkan_CreateInstance(VkInstance *Instance, arena_alloc TmpArena, const char *AppName)
-{
+internal VkInstance Vulkan_CreateInstance(
+    const char **ValidationLayers, int ValidationLayerCount,
+    VkInstance *Instance, arena_alloc TmpArena, const char *AppName
+) {
     NOT_DEBUG_ONLY(
         /* to shut the compiler up */
         (void)g_VkValidationLayerNames;
@@ -228,8 +222,8 @@ internal VkInstance Vulkan_CreateInstance(VkInstance *Instance, arena_alloc TmpA
         VkExtensionProperties *SupportedInstanceExtensions;
         Arena_AllocArray(&TmpArena, &SupportedInstanceExtensions, Count); 
         VK_CHECK(vkEnumerateInstanceExtensionProperties(NULL, 
-                &Count, SupportedInstanceExtensions
-            ));
+            &Count, SupportedInstanceExtensions
+        ));
 
         Vulkan_LogLn("Supported instance extensions (%d): ", Count);
         for (u32 i = 0; i < Count; i++)
@@ -249,7 +243,7 @@ internal VkInstance Vulkan_CreateInstance(VkInstance *Instance, arena_alloc TmpA
             Extensions[ExtensionCount - 1] = VK_EXT_DEBUG_REPORT_EXTENSION_NAME;
         );
     }
-    Vulkan_LogLn("Used %d extensions to create the Vulkan_ instance: ", ExtensionCount);
+    Vulkan_LogLn("Used %d extensions to create the Vulkan instance: ", ExtensionCount);
     for (u32 i = 0; i < ExtensionCount; i++)
     {
         Vulkan_LogLn("\t%s", Extensions[i]);
@@ -269,10 +263,8 @@ internal VkInstance Vulkan_CreateInstance(VkInstance *Instance, arena_alloc TmpA
         .pApplicationInfo = &AppInfo,
         .enabledExtensionCount = ExtensionCount,
         .ppEnabledExtensionNames = Extensions,
-        DEBUG_ONLY(
-            .enabledLayerCount = STATIC_ARRAY_SIZE(g_VkValidationLayerNames),
-            .ppEnabledLayerNames = g_VkValidationLayerNames,
-        )
+        .enabledLayerCount = ValidationLayerCount,
+        .ppEnabledLayerNames = ValidationLayers,
     };
     VK_CHECK(vkCreateInstance(&CreateInfo, NULL, Instance));
     return *Instance;
@@ -346,6 +338,7 @@ internal vk_queue_family_indices Vulkan_GetQueueFamilies(
 
 /* Out will not be written to if the returned rank is DEVICE_RANK_NONE */
 internal device_rank Vulkan_CheckDeviceSuitability(
+    const char **DeviceExtensions, int DeviceExtensionCount,
     VkPhysicalDevice Device, VkSurfaceKHR WindowSurface, arena_alloc TmpArena
 ) {
     /* rank device */
@@ -391,20 +384,20 @@ internal device_rank Vulkan_CheckDeviceSuitability(
 
     /* check for device level required extensions */
     {
-        u32 DeviceExtensionCount = 0;
-        vkEnumerateDeviceExtensionProperties(Device, NULL, &DeviceExtensionCount, NULL);
-        VkExtensionProperties *DeviceExtensions;
-        Arena_AllocArray(&TmpArena, &DeviceExtensions, DeviceExtensionCount);
-        vkEnumerateDeviceExtensionProperties(Device, NULL, &DeviceExtensionCount, DeviceExtensions);
+        u32 ExtensionCount = 0;
+        vkEnumerateDeviceExtensionProperties(Device, NULL, &ExtensionCount, NULL);
+        VkExtensionProperties *Properties;
+        Arena_AllocArray(&TmpArena, &Properties, ExtensionCount);
+        vkEnumerateDeviceExtensionProperties(Device, NULL, &ExtensionCount, Properties);
 
         bool32 AllExtensionsSupported = true;
-        for (u32 i = 0; i < STATIC_ARRAY_SIZE(g_VkDeviceExtensionNames); i++)
+        for (int i = 0; i < DeviceExtensionCount; i++)
         {
             bool32 DeviceSupportsThisExtension = false;
-            int Length = strlen(g_VkDeviceExtensionNames[i]);
-            for (u32 k = 0; k < DeviceExtensionCount && !DeviceSupportsThisExtension; k++)
+            int Length = strlen(DeviceExtensions[i]);
+            for (int k = 0; k < DeviceExtensionCount && !DeviceSupportsThisExtension; k++)
             {
-                DeviceSupportsThisExtension = (strncmp(g_VkDeviceExtensionNames[i], DeviceExtensions[k].extensionName, Length) == 0);
+                DeviceSupportsThisExtension = (strncmp(DeviceExtensions[i], Properties[k].extensionName, Length) == 0);
             }
             AllExtensionsSupported &= DeviceSupportsThisExtension;
         }
@@ -425,6 +418,7 @@ internal device_rank Vulkan_CheckDeviceSuitability(
 
 /* NOTE: memory in the returned array is allocated using the given arena */
 internal vk_physical_devices Vulkan_QueryAndSelectGpu(
+    const char **DeviceExtensions, int DeviceExtensionCount,
     VkInstance Instance, VkSurfaceKHR WindowSurface, arena_alloc *Arena) 
 {
     /* query and report gpus */
@@ -470,7 +464,7 @@ internal vk_physical_devices Vulkan_QueryAndSelectGpu(
         device_rank SelectedDeviceRank = DEVICE_RANK_NONE;
         for (u32 i = 0; i < Gpus.Count; i++)
         {
-            device_rank Rank = Vulkan_CheckDeviceSuitability(Gpus.HandleList[i], WindowSurface, *Arena);
+            device_rank Rank = Vulkan_CheckDeviceSuitability(DeviceExtensions, DeviceExtensionCount, Gpus.HandleList[i], WindowSurface, *Arena);
             if (Rank > SelectedDeviceRank) 
             {
                 Selected = i;
@@ -482,7 +476,13 @@ internal vk_physical_devices Vulkan_QueryAndSelectGpu(
         {
             VK_FATAL("Vulkan: Could not find a suitable device.");
         }
-        //Selected = 1;
+
+        bool32 OverrideSelectedDevice = false;
+        if (OverrideSelectedDevice)
+        {
+            // Selected = Selected;
+        }
+
         SelectedGpu = (vk_gpu) {
             .Features = Gpus.FeaturesList[Selected],
             .Properties = Gpus.PropertiesList[Selected],
@@ -501,6 +501,8 @@ internal vk_physical_devices Vulkan_QueryAndSelectGpu(
 }
 
 internal vk_gpu_context Vulkan_CreateGpuContext(
+    const char **DeviceExtensions, int DeviceExtensionCount, 
+    const char **ValidationLayers, int ValidationLayerCount,
     VkPhysicalDevice Gpu, VkSurfaceKHR WindowSurface, VkPhysicalDeviceFeatures EnabledFeatures, arena_alloc TmpArena
 ) {
     /* get queue families */
@@ -547,12 +549,10 @@ internal vk_gpu_context Vulkan_CreateGpuContext(
             .queueCreateInfoCount = UniqueQueueCount,
             .pQueueCreateInfos = UniqueQueueCreateInfo, 
             .pEnabledFeatures = &EnabledFeatures,
-            .enabledExtensionCount = STATIC_ARRAY_SIZE(g_VkDeviceExtensionNames),
-            .ppEnabledExtensionNames = g_VkDeviceExtensionNames,
-            DEBUG_ONLY(
-                .enabledLayerCount = STATIC_ARRAY_SIZE(g_VkValidationLayerNames),
-                .ppEnabledLayerNames = g_VkValidationLayerNames,
-            )
+            .enabledExtensionCount = DeviceExtensionCount,
+            .ppEnabledExtensionNames = DeviceExtensions,
+            .enabledLayerCount = ValidationLayerCount,
+            .ppEnabledLayerNames = ValidationLayers,
         };
         VK_CHECK(vkCreateDevice(Gpu, &DeviceCreateInfo, NULL, &Device));
         vkGetDeviceQueue(Device, QueueFamilyIndex[QUEUE_FAMILY_TYPE_GRAPHICS], 0, &GraphicsQueue);
@@ -1029,9 +1029,7 @@ internal VkRenderPass Vulkan_CreateRenderPass(VkDevice Device,
             .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         };
         VkAttachmentReference ColorAttachmentResolveRef = {
-            .attachment = (Sample == VK_SAMPLE_COUNT_1_BIT)
-                ? VK_ATTACHMENT_UNUSED 
-                : COLOR_RESOLVE_ATTACHMENT,                         /* index in Attachments */
+            .attachment = COLOR_RESOLVE_ATTACHMENT,                         /* index in Attachments */
             .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         };
 
@@ -1471,11 +1469,9 @@ internal void Vulkan_ResizeRenderTarget(
     );
 }
 
-
-
-internal void Vulkan_RecreateSwapchain(renderer *Vk)
+internal void Vulkan_RecreateSwapchainAndRenderTargetThread(void *UserData)
 {
-    Vk->IsResized = false;
+    renderer *Vk = UserData;
     VkDevice Device = Vulkan_GetDevice(Vk);
     vk_gpu_context *GpuContext = &Vk->GpuContext;
 
@@ -1513,7 +1509,7 @@ internal void Vulkan_RecreateSwapchain(renderer *Vk)
             }
             Vk->Swapchain = NewSwapchain;
         }
-        Profiler_Scope(Vk->Profiler, "Vulkan_ResizeFramebuffer()")
+        Profiler_Scope(Vk->Profiler, "Vulkan_ResizeRenderTarget()")
         {
             Vulkan_ResizeRenderTarget(
                 &Vk->RenderTarget, 
@@ -1524,6 +1520,12 @@ internal void Vulkan_RecreateSwapchain(renderer *Vk)
             );
         }
     }
+}
+
+internal void Vulkan_RecreateSwapchainAndRenderTarget(renderer *Vk)
+{
+    Vk->IsResized = false;
+    Vk->RecreateSwapchainAndRenderTargetThread = Platform_ThreadCreate(Vk, Vulkan_RecreateSwapchainAndRenderTargetThread);
 }
 
 
@@ -1817,6 +1819,12 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
     vk_swapchain *Swapchain = &Vk->Swapchain;
     vk_gpu_context *GpuContext = &Vk->GpuContext;
 
+    if (Vk->RecreateSwapchainAndRenderTargetThread.Value != 0)
+    {
+        Platform_ThreadJoin(Vk->RecreateSwapchainAndRenderTargetThread);
+        Vk->RecreateSwapchainAndRenderTargetThread.Value = 0;
+    }
+
     u32 ImageIndex = 0;
     {
         VkSemaphore GpuWaitForRenderTarget = Vk->RenderFrame.GpuWaitForRenderTarget[Vk->CurrentFrame];
@@ -1828,7 +1836,7 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
             );
             if (Result == VK_ERROR_OUT_OF_DATE_KHR)
             {
-                Vulkan_RecreateSwapchain(Vk);
+                Vulkan_RecreateSwapchainAndRenderTarget(Vk);
                 return;
             }
             else if (Result == VK_SUBOPTIMAL_KHR || Result == VK_SUCCESS)
@@ -1843,14 +1851,26 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
         vkResetFences(Device, 1, Fence);
     }
 
+    /* TODO: record command buffer and transfer in parallel */
     /* record command buffer */
     {
         VK_CHECK(vkResetCommandBuffer(Vk->RenderFrame.CommandBuffers[Vk->CurrentFrame], 0));
         Vulkan_RecordCommandBuffer(Vk, Vk->RenderFrame.CommandBuffers[Vk->CurrentFrame], ImageIndex, Pipelines, PipelineCount);
-        bool32 ShouldUpdateUniformBuffer = false;
-        if (ShouldUpdateUniformBuffer)
+    }
+
+    /* update resources */
+    {
+        vk_update_resource *Last = Vk->UpdateResourceHead;
+        for (vk_update_resource *i = Vk->UpdateResourceHead; i; Last = i, i = i->Next)
         {
-            UNREACHABLE_IF(ShouldUpdateUniformBuffer, "TODO: upate uniform buffer");
+            memcpy(i->UniformBuffersDst[Vk->CurrentFrame], i->UniformBufferSrc, i->UniformBufferSizeBytes);
+        }
+
+        if (Last)
+        {
+            Last->Next = Vk->UpdateResourceFree;
+            Vk->UpdateResourceFree = Vk->UpdateResourceHead;
+            Vk->UpdateResourceHead = NULL;
         }
     }
 
@@ -1895,7 +1915,7 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
         VkResult Result = vkQueuePresentKHR(GpuContext->PresentQueue, &PresentInfo);
         if (Result == VK_ERROR_OUT_OF_DATE_KHR || Result == VK_SUBOPTIMAL_KHR || Vk->IsResized)
         {
-            Vulkan_RecreateSwapchain(Vk);
+            Vulkan_RecreateSwapchainAndRenderTarget(Vk);
         }
         else if (Result != VK_SUCCESS)
         {
@@ -1935,17 +1955,43 @@ renderer_handle Renderer_Create(const renderer_config *Config)
         Arena = &Vk->Arena;
     }
 
+    const char *ValidationLayers[] = {
+        "VK_LAYER_KHRONOS_validation", 
+    };
+    int ValidationLayerCount = STATIC_ARRAY_SIZE(ValidationLayers);
+    NOT_DEBUG_ONLY(ValidationLayerCount = 0);
 
-    VkInstance Instance = Vulkan_CreateInstance(&Vk->Instance, *Arena, Config->AppName);
-    DEBUG_ONLY(Vk->DebugReportCallback = Vulkan_CreateDebugCallback(Instance)); 
+    VkInstance Instance = Vulkan_CreateInstance(
+        ValidationLayers, ValidationLayerCount,
+        &Vk->Instance, *Arena, Config->AppName
+    );
+    DEBUG_ONLY(Vk->DebugReportCallback = Vulkan_CreateDebugCallback(Instance, &Vk->VkDestroyDebugReportCallback)); 
     VK_CHECK(Vulkan_Platform_CreateWindowSurface(Instance, NULL, &Vk->WindowSurface));
 
     vk_gpu_context *GpuContext;
     VkDevice Device;
     {
-        Vk->Gpus = Vulkan_QueryAndSelectGpu(Instance, Vk->WindowSurface, Arena);
+        const char *DeviceExtensions[] = {
+            VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+            VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
+        };
+        int DeviceExtensionCount = STATIC_ARRAY_SIZE(DeviceExtensions);
+
+        Vk->Gpus = Vulkan_QueryAndSelectGpu(
+            DeviceExtensions, DeviceExtensionCount,
+            Instance, 
+            Vk->WindowSurface, 
+            Arena
+        );
         Vk->Gpus.Selected.Features.sampleRateShading = VK_TRUE;
-        Vk->GpuContext = Vulkan_CreateGpuContext(Vk->Gpus.Selected.Handle, Vk->WindowSurface, Vk->Gpus.Selected.Features, *Arena);
+        Vk->GpuContext = Vulkan_CreateGpuContext(
+            DeviceExtensions, DeviceExtensionCount,
+            ValidationLayers, ValidationLayerCount,
+            Vk->Gpus.Selected.Handle, 
+            Vk->WindowSurface, 
+            Vk->Gpus.Selected.Features, 
+            *Arena
+        );
 
         GpuContext = &Vk->GpuContext;
         Device = GpuContext->Device;
@@ -1970,7 +2016,7 @@ renderer_handle Renderer_Create(const renderer_config *Config)
         renderer_resource_group_config ResourceConfig = { 
             .CpuBufferPoolSizeBytes = 1*MB,
             .GpuCpuMemoryPoolSizeBytes = 8*MB,
-            .GpuLocalMemoryPoolSizeBytes = 128*MB,
+            .GpuLocalMemoryPoolSizeBytes = 256*MB,
             .GpuBufferPoolSizeBytes = 1*MB,
 
             .UniformBufferBinding = 0,
@@ -1985,6 +2031,8 @@ renderer_handle Renderer_Create(const renderer_config *Config)
 
     /* create render target  */
     {
+        renderer_msaa_flags AvailableMSAAFlags = Renderer_GetAvailableMSAAFlags(Vk);
+        VkSampleCountFlagBits MaxSampleCount = 1u << (CountTrailingZeros32(~AvailableMSAAFlags) - 1);
         vk_resource_group *ResourceGroup = Vk->GlobalResourceGroup;
         Vk->RenderTarget = Vulkan_CreateRenderTarget(
             &ResourceGroup->GpuAllocator, 
@@ -1992,7 +2040,7 @@ renderer_handle Renderer_Create(const renderer_config *Config)
             Vk->CommandPool, 
             GpuContext, 
             &Vk->Swapchain, 
-            VK_SAMPLE_COUNT_1_BIT
+            MaxSampleCount
         );
 
         VkFence *Fences;
@@ -2181,8 +2229,15 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
                 &ResourceGroup->GpuAllocator, 
                 &(vkm_buffer_config) {
                     .BufferType = VKM_BUFFER_TYPE_UBO,
-                    .MemoryCapacityBytes = Config->UniformBufferSizeBytes,
+                    .MemoryCapacityBytes = UniformBufferSizeBytes,
                 }
+            );
+            vkm_buffer_info BufferInfo = Vkm_GetBufferInfo(
+                &ResourceGroup->GpuAllocator, 
+                ResourceGroup->UniformBuffers[i]
+            );
+            ASSERT(BufferInfo.CapacityBytes <= Vk->Gpus.Selected.Properties.limits.maxUniformBufferRange, 
+                "rounded: %ld, provided: %ld, max allowed by device: %d", BufferInfo.CapacityBytes, UniformBufferSizeBytes, Vk->Gpus.Selected.Properties.limits.maxUniformBufferRange
             );
             ResourceGroup->UniformBuffersMapped[i] = Vkm_MapBufferMemory(
                 &ResourceGroup->GpuAllocator, 
@@ -2416,6 +2471,7 @@ void Renderer_BindResourceGroup(
                 .offset = BufferInfo.OffsetBytes,
                 .range = BufferInfo.CapacityBytes,
             };
+            UNREACHABLE_IF(BufferInfo.CapacityBytes > 64*KB, "uni");
         }
 
         for (int i = 0; i < Vk->FramesInFlight; i++)
@@ -2692,7 +2748,7 @@ renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
     {
         bool32 EnableMSAA = IS_SET(Config->EnabledGraphicsFeatures, RENDERER_GFXFT_MSAA);
         UNREACHABLE_IF(!EnableMSAA && Vk->RenderTarget.SampleCount != VK_SAMPLE_COUNT_1_BIT, 
-            "MSAASampleCount must be 1 if RENDERER_GFXFT_MSAA is not set in GraphicsPipelineConfig.EnabledGraphicsFeatures"
+            "Must enable MSAA if MSAA is not 1X"
         );
 
         VkCullModeFlags CullMode = VK_CULL_MODE_NONE; 
@@ -2734,6 +2790,45 @@ renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
         .Value = Vulkan_ResourceGroup_MakeHandle(ResourceGroup, Index),
     };
     return Handle;
+}
+
+
+
+void Renderer_UpdateUniformBuffer(
+    renderer *Vk,
+    renderer_resource_group_handle ResourceGroupHandle,
+    const void *Data, isize SizeBytes
+) {
+    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle);
+    UNREACHABLE_IF(SizeBytes > ResourceGroup->UniformBufferTmpCapacity, 
+        "Uniform buffer size larger than capacity on creation: %lld > %lld",
+        (long long)SizeBytes, (long long)ResourceGroup->UniformBufferTmpCapacity
+    );
+
+    /* NOTE: copy to tmp buffer, delay update to draw time */
+    memcpy(ResourceGroup->UniformBufferTmp, Data, SizeBytes);
+
+    /* push uniform to be updated */
+    {
+        vk_update_resource *Node = Vk->UpdateResourceFree;
+        if (Node)
+        {
+            Vk->UpdateResourceFree = Node->Next;
+            Node->Next = NULL;
+        }
+        else
+        {
+            Node = Arena_Alloc(&Vk->Arena, sizeof *Node);
+        }
+
+        *Node = (vk_update_resource) {
+            .Next = Vk->UpdateResourceHead,
+            .UniformBuffersDst = ResourceGroup->UniformBuffersMapped,
+            .UniformBufferSrc = ResourceGroup->UniformBufferTmp,
+            .UniformBufferSizeBytes = SizeBytes,
+        };
+        Vk->UpdateResourceHead = Node;
+    }
 }
 
 
@@ -2788,9 +2883,10 @@ void Renderer_Destroy(renderer *Vk)
     vkDestroyCommandPool(Device, Vk->CommandPool, NULL);
     vkDestroyDevice(Device, NULL);
     vkDestroySurfaceKHR(Vk->Instance, Vk->WindowSurface, NULL);
-    DEBUG_ONLY(
-        g_VkDestroyDebugReportCallbackEXT(Vk->Instance, Vk->DebugReportCallback, NULL);
-    );
+    if (Vk->VkDestroyDebugReportCallback)
+    {
+        Vk->VkDestroyDebugReportCallback(Vk->Instance, Vk->DebugReportCallback, NULL);
+    }
     vkDestroyInstance(Vk->Instance, NULL);
 
     /* arena owns Vk */
