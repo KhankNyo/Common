@@ -91,18 +91,6 @@ extern "C" {
 #  error Unknown compiler, must add force_inline, packed(...), align(v), die_IMMEDIATELY(), STATIC_ASSERT(x, m)
 #endif
 
-#define typedef_struct(name) typedef struct name name
-#define typedef_union(name) typedef union name name
-#define handle(scalar_subtype) struct { scalar_subtype Value; }
-#define internal static
-#define persistent_local static
-#define header_function static inline
-#define eprintf(...) fprintf(stderr, __VA_ARGS__)
-#define eprintfln(...) (fprintf(stderr, __VA_ARGS__) + fprintf(stderr, "\n"))
-#define printfln(...) (printf(__VA_ARGS__) + printf("\n"))
-#define fprintfln(f, ...) (fprintf(f, __VA_ARGS__), fprintf(f, "\n"))
-
-
 #if defined(_DEBUG)
 #  define DEBUG_ONLY(...) __VA_ARGS__
 #  define NOT_DEBUG_ONLY(...)
@@ -122,12 +110,18 @@ extern "C" {
 #define ASSERT(cond, ...) DEBUG_ONLY(UNREACHABLE_IF(!(cond), "ASSERTION FAILED '"#cond"':\n" __VA_ARGS__))
 #define TODO(...) STATIC_ASSERT(false, "TODO: " __VA_ARGS__)
 #define RUNTIME_TODO(...) UNREACHABLE_IF(true, "TODO: "__VA_ARGS__)
-#define ASSERT_EXPRESSION_TYPE(expr, type, msg) \
-    STATIC_ASSERT(_Generic((expr), \
+#define TYPE_EQUAL(expr, type) _Generic((expr), \
         type: true, \
-        default: false), \
-        "" msg\
-    ) /* c11 is awesome, runs on msvc, clang, gcc and even tcc */
+        default: false\
+    )
+/* c11 is awesome, runs on msvc, clang, gcc and even tcc */
+#define ASSERT_EXPRESSION_TYPE(expr, type, msg) \
+    STATIC_ASSERT(TYPE_EQUAL(expr, type), "" msg) \
+
+
+
+#define KB 1024
+#define MB (1024*1024)
 
 #define STATIC_ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define IN_RANGE(lower, n, upper) ((lower) <= (n) && (n) <= (upper))
@@ -148,26 +142,19 @@ extern "C" {
 #define IS_POWER_OF_2(value) (((value) & ((value) - 1)) == 0)
 #define TO_UPPER(ascii_char) ((ascii_char) & ~(1u << 5))
 
-/* TODO: remove this, Platform-Core.h and Renderer-Vulkan.h are depending on it, but its usage can be replaced by slice */
-#define dynamic_array(...) struct {\
-    __VA_ARGS__ *Data;\
-    isize Count, Capacity;\
-}
-#define Arena_AllocDynamicArray(p_arena, p_dynamic_array, isize_new_count, isize_new_capacity) do {\
-    typeof(p_dynamic_array) dynamic_array_ = p_dynamic_array;\
-    dynamic_array_->Count = isize_new_count;\
-    dynamic_array_->Capacity = isize_new_capacity;\
-    Arena_AllocArray(p_arena, &dynamic_array_->Data, dynamic_array_->Capacity);\
-} while (0)
-#define dynamic_array_foreach(p_dynamic_array, iterator_name) for (\
-        typeof((p_dynamic_array)->Data) iterator_name = (p_dynamic_array)->Data;\
-        iterator_name < (p_dynamic_array)->Data + (p_dynamic_array)->Count;\
-        iterator_name++)
+
+#define typedef_struct(name) typedef struct name name
+#define typedef_union(name) typedef union name name
+#define handle(scalar_subtype) struct { scalar_subtype Value; }
+#define internal static
+#define persistent_local static
+#define header_function static inline
+#define eprintf(...) fprintf(stderr, __VA_ARGS__)
+#define eprintfln(...) (fprintf(stderr, __VA_ARGS__), fprintf(stderr, "\n"))
+#define printfln(...) (printf(__VA_ARGS__) + printf("\n"))
+#define fprintfln(f, ...) (fprintf(f, __VA_ARGS__), fprintf(f, "\n"))
 
 
-
-#define KB 1024
-#define MB (1024*1024)
 
 typedef uint8_t u8;
 typedef uint16_t u16;

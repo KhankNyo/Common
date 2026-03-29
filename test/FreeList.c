@@ -8,24 +8,26 @@
 
 internal int g_FreeCount, g_AllocCount;
 
-internal void *Alloc(void *UserData, isize SizeBytes, usize Alignment)
-{
-    (void)UserData, (void)Alignment;
-    g_AllocCount++;
-    return malloc(SizeBytes);
-}
-
-internal void Free(void *UserData, void *Ptr)
+internal void *Alloc(void *UserData, const memory_alloc_parameter *Param)
 {
     (void)UserData;
-    g_FreeCount++;
-    free(Ptr);
+    switch (Param->Mode)
+    {
+    case ALLOCATOR_ALLOCATE:
+        g_AllocCount++;
+        return malloc(Param->As.Allocate.SizeBytes);
+    case ALLOCATOR_FREE:
+        g_FreeCount++;
+        free(Param->As.Free.Ptr);
+        break;
+    }
+    return NULL;
 }
 
-internal arena_user_allocator g_StdAlloc = {
-    .Allocate = Alloc,
-    .Free = Free,
+internal memory_alloc_interface g_StdAlloc = {
+    .Routine = Alloc
 };
+
 internal int g_Index;
 #define CHECK_MEM(p, b, s) ASSERT(CheckMem(p, b, s), "FAILED: %s[%d] = %02x (expected %02x)", #p, g_Index, (p)[g_Index], b)
 
