@@ -4,14 +4,16 @@
 #include "Common.h"
 #include "Renderer-Core.h"
 #include "Memory.h"
+#include "Arena.h"
 
 
-#define TEXTURE_COUNT 2
+#define TEXTURE_COUNT 3
 
 struct app
 {
     renderer_handle Renderer;
     renderer_mesh_handle FullScreenMesh;
+    renderer_resource_binding ResourceGroupBinding;
     renderer_graphics_pipeline_handle GraphicsPipeline;
 
     uint SelectedTexture;

@@ -162,27 +162,13 @@ internal vkm_buffer_chunk *Vkm__CreateChunk(vkm *Vkm, i32 EntryIndex, i32 SizeBy
 internal bool32 Vkm__UpdateLargest(vkm_buffer_pool_entry *Entry)
 {
     vkm_buffer_chunk *Largest = Entry->Freed;
-    for (vkm_buffer_chunk *Curr = Entry->Freed;
-        Curr;
-        Curr = Curr->Next
-    ) {
+    LinkedList_Foreach(Entry->Freed, Curr)
+    {
         if (Largest->SizeAligned > Curr->SizeAligned)
             Largest = Curr;
     }
     Entry->LargestFree = Largest;
     return Largest != NULL;
-}
-
-internal void Vkm__UnlinkChunk(vkm_buffer_chunk **Head, vkm_buffer_chunk *Chunk)
-{
-    if (Chunk->Prev)
-        Chunk->Prev->Next = Chunk->Next;
-    else *Head = Chunk->Next;
-    if (Chunk->Next)
-        Chunk->Next->Prev = Chunk->Prev;
-
-    Chunk->Next = NULL;
-    Chunk->Prev = NULL;
 }
 
 internal void Vkm__InsertFreeChunk(vkm *Vkm, vkm_buffer_pool_entry *Entry, vkm_buffer_chunk *Chunk)
@@ -199,13 +185,7 @@ internal void Vkm__InsertFreeChunk(vkm *Vkm, vkm_buffer_pool_entry *Entry, vkm_b
         Curr = Curr->Next;
     }
 
-    if (Prev)
-        Prev->Next = Chunk;
-    else Entry->Freed = Chunk;
-    Chunk->Prev = Prev;
-    Chunk->Next = Curr;
-    if (Curr)
-        Curr->Prev = Chunk;
+    DoubleLink_Link(&Entry->Freed, Prev, Chunk, Curr);
 
     /* coalesce */
     for (vkm_buffer_chunk *i = Prev? Prev : Entry->Freed; 
@@ -225,6 +205,8 @@ internal void Vkm__InsertFreeChunk(vkm *Vkm, vkm_buffer_pool_entry *Entry, vkm_b
                 i->Next = Next;
                 if (Next)
                     Next->Prev = i;
+
+                SingleLink_Push(&Vkm->BufferChunkUnused, Skip);
             }
             else break;
         }
@@ -317,7 +299,7 @@ internal vkm_device_memory_node *Vkm__GetFreeNode(vkm *Vkm, VkMemoryRequirements
                 .allocationSize = CapacityBytes,
             };
             VK_CHECK(vkAllocateMemory(Vkm->Device, &AllocateInfo, NULL, &DeviceMemory));
-            VkDynamicArray_Push(&Vkm->FreeList, &Vkm->DeviceMemory, (vkm_device_memory) {
+            DynamicArray_Push(&Vkm->FreeList, &Vkm->DeviceMemory, (vkm_device_memory) {
                 .MemoryProperties = MemoryProperties,
                 .MemoryTypeIndex = MemoryTypeIndex,
                 .CapacityAligned = CapacityBytes / VKM_MIN_ALIGNMENT,
@@ -349,13 +331,7 @@ internal void Vkm__InsertFreeNode(vkm *Vkm, vkm_device_memory_node **Head, vkm_d
         Curr = Curr->Next;
     }
 
-    if (Prev)
-        Prev->Next = Node;
-    else *Head = Node;
-    Node->Prev = Prev;
-    Node->Next = Curr;
-    if (Curr)
-        Curr->Prev = Node;
+    DoubleLink_Link(Head, Prev, Node, Curr);
 
     /* coalesce */
     for (vkm_device_memory_node *i = Prev? Prev : *Head; 
@@ -375,6 +351,8 @@ internal void Vkm__InsertFreeNode(vkm *Vkm, vkm_device_memory_node **Head, vkm_d
                 i->Next = Next;
                 if (Next)
                     Next->Prev = i;
+
+                DoubleLink_Push(&Vkm->DeviceMemoryNodeUnused, Skip);
             }
             else break;
         }
@@ -462,12 +440,7 @@ internal vkm_device_memory_node *Vkm__AllocateNode(vkm *Vkm, VkMemoryRequirement
 
         /* insert allocated node */
         vkm_device_memory_node **Head = &Vkm->DeviceMemoryNodeAllocated[AllocatedNode->MemoryTypeIndex];
-        AllocatedNode->Prev = NULL;
-        AllocatedNode->Next = *Head;
-        if (*Head)
-            (*Head)->Prev = AllocatedNode;
-
-        *Head = AllocatedNode;
+        DoubleLink_Push(Head, AllocatedNode);
     }
     return AllocatedNode;
 }
@@ -493,7 +466,8 @@ internal vkm_buffer_handle Vkm__CreateBufferRaw(
             /* NOTE: largest free will get updated */
             SuitableChunk = Entry->LargestFree;
             Entry->LargestFree = NULL;
-            Vkm__UnlinkChunk(&Entry->Freed, SuitableChunk);
+
+            DoubleLink_Unlink(&Entry->Freed, SuitableChunk);
             break;
         }
     }
@@ -522,7 +496,7 @@ internal vkm_buffer_handle Vkm__CreateBufferRaw(
         i64 DeviceMemoryOffsetBytes = Node->OffsetAligned * VKM_MIN_ALIGNMENT;
         vkBindBufferMemory(Vkm->Device, Buffer, Vkm__GetDeviceMemoryHandle(Vkm, Node), DeviceMemoryOffsetBytes);
 
-        VkDynamicArray_Push(&Vkm->FreeList, Pool, (vkm_buffer_pool_entry) {
+        DynamicArray_Push(&Vkm->FreeList, Pool, (vkm_buffer_pool_entry) {
             .Buffer = Buffer,
             .BufferUsageFlags = BufferUsage,
             .Alignment = Required.alignment,
@@ -563,11 +537,7 @@ internal vkm_buffer_handle Vkm__CreateBufferRaw(
         }
 
         /* update allocated list */
-        if (Entry->Allocated)
-            Entry->Allocated->Prev = SuitableChunk;
-        SuitableChunk->Prev = NULL;
-        SuitableChunk->Next = Entry->Allocated;
-        Entry->Allocated = SuitableChunk;
+        DoubleLink_Push(&Entry->Allocated, SuitableChunk);
     }
     vkm_buffer_handle Handle = { 
         .Value = SuitableChunk,
@@ -709,19 +679,19 @@ void Vkm_Destroy(vkm *Vkm)
     }
 
     /* deallocate all memory */
-    dynamic_array_foreach(&Vkm->DeviceMemory, i)
+    DynamicArray_Foreach(&Vkm->DeviceMemory, i)
     {
         vkFreeMemory(Vkm->Device, i->Handle, NULL);
     }
 
     /* deallocate all buffers */
-    dynamic_array_foreach(&Vkm->BufferPool, i)
+    DynamicArray_Foreach(&Vkm->BufferPool, i)
     {
         vkDestroyBuffer(Vkm->Device, i->Buffer, NULL);
     }
 
     /* deallocate all images */
-    dynamic_array_foreach(&Vkm->ImagePool, i)
+    DynamicArray_Foreach(&Vkm->ImagePool, i)
     {
         vkDestroyImage(Vkm->Device, i->Image, NULL);
         vkDestroyImageView(Vkm->Device, i->ImageView, NULL);
@@ -770,7 +740,7 @@ vkm_image_handle Vkm_CreateImage(vkm *Vkm, const vkm_image_config *Config)
     VkImageView ImageView = Vkm__CreateImageView(Vkm, 
         Image, Config->Format, Config->Aspect, MipLevels
     );
-    VkDynamicArray_Push(&Vkm->FreeList, &Vkm->ImagePool, (vkm_image_pool_entry) {
+    DynamicArray_Push(&Vkm->FreeList, &Vkm->ImagePool, (vkm_image_pool_entry) {
         .Image = Image,
         .ImageView = ImageView, 
         .DeviceMemoryNode = AllocatedNode,
@@ -808,7 +778,7 @@ vkm_buffer_handle Vkm_ResizeBuffer(vkm *Vkm, vkm_buffer_handle BufferHandle, i64
         NewSizeBytes = MAXIMUM(NewSizeBytes, Chunk->SizeAligned*VKM_MIN_ALIGNMENT*2);
         NewSizeBytes = Memory_AlignSize(NewSizeBytes, Entry->Alignment);
 
-        Vkm__UnlinkChunk(&Entry->Allocated, Chunk);
+        DoubleLink_Unlink(&Entry->Allocated, Chunk);
         Vkm__InsertFreeChunk(Vkm, Entry, Chunk);
         BufferHandle = Vkm__CreateBufferRaw(Vkm, 
             Entry->BufferUsageFlags, 

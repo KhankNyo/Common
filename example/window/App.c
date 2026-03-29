@@ -97,46 +97,49 @@ internal void InitRenderer(app *App, const char *AppName)
 
     /* create resource group */
     {
-        renderer_resource_group_config Config = {
+        renderer_resource_group_config Config = { 0 }; /* use default configs */
+        App->ResourceGroup = Renderer_CreateResourceGroup(App->Renderer, &Config);
+
+        /* create a full screen mesh */
+        vertex_buffer Vertices[4] = {
+            [0] = {
+                .Color = {.a = 1},
+                .Pos.At = {-1, 1, 0},
+            },
+            [1] = {
+                .Color = {.r = 1, .a = 1},
+                .Pos.At = {1, 1, 0},
+            },
+            [2] = {
+                .Color = {.g = 1, .a = 1},
+                .Pos.At = {1, -1, 0},
+            },
+            [3] = {
+                .Color = {.b = 1, .a = 1},
+                .Pos.At = {-1, -1, 0},
+            }
+        };
+        u32 Indices[6] = {
+            0, 1, 2,
+            2, 3, 0
+        };
+        renderer_mesh_config MeshConfig = {
+            .IndexCount = STATIC_ARRAY_SIZE(Indices),
+            .VertexCount = STATIC_ARRAY_SIZE(Vertices),
+            .VertexBufferElementSizeBytes = sizeof(Vertices[0]),
+        };
+        App->FullScreenMesh = Renderer_CreateStaticMesh(
+            App->Renderer, App->ResourceGroup, &MeshConfig, Vertices, Indices
+        );
+    }
+
+    {
+        renderer_resource_binding_config Config = {
             .UniformBufferBinding = 0,
             .TextureArrayBinding = 1,
+            .ResourceGroupHandle = App->ResourceGroup,
         };
-        App->ResourceGroup = Renderer_CreateResourceGroup(App->Renderer, &Config);
-        {
-            /* create a full screen mesh */
-
-            vertex_buffer Vertices[4] = {
-                [0] = {
-                    .Color = {.a = 1},
-                    .Pos.At = {-1, 1, 0},
-                },
-                [1] = {
-                    .Color = {.r = 1, .a = 1},
-                    .Pos.At = {1, 1, 0},
-                },
-                [2] = {
-                    .Color = {.g = 1, .a = 1},
-                    .Pos.At = {1, -1, 0},
-                },
-                [3] = {
-                    .Color = {.b = 1, .a = 1},
-                    .Pos.At = {-1, -1, 0},
-                }
-            };
-            u32 Indices[6] = {
-                0, 1, 2,
-                2, 3, 0
-            };
-            renderer_mesh_config MeshConfig = {
-                .IndexCount = STATIC_ARRAY_SIZE(Indices),
-                .VertexCount = STATIC_ARRAY_SIZE(Vertices),
-                .VertexBufferElementSizeBytes = sizeof(Vertices[0]),
-            };
-            App->FullScreenMesh = Renderer_CreateStaticMesh(
-                App->Renderer, App->ResourceGroup, &MeshConfig, Vertices, Indices
-            );
-        }
-        Renderer_BindResourceGroup(App->Renderer, App->ResourceGroup);
+        App->ResourceBinding = Renderer_BindResourceGroup(App->Renderer, &Config);
     }
 
     /* upload shader and create graphics pipeline */
@@ -283,6 +286,6 @@ internal void InitRenderer(app *App, const char *AppName)
             .FragShaderCodeSizeBytes = sizeof FragmentShaderCode,
             .VertexDescription = &VertexDesc,
         };
-        App->GraphicsPipeline = Renderer_CreateGraphicsPipeline(App->Renderer, App->ResourceGroup, &GraphicsPipelineConfig);
+        App->GraphicsPipeline = Renderer_CreateGraphicsPipeline(App->Renderer, App->ResourceBinding, &GraphicsPipelineConfig);
     }
 }

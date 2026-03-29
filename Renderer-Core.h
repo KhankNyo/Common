@@ -9,7 +9,6 @@ extern "C" {
 
 #include "Common.h"
 #include "Profiler.h"
-#include "Slice.h"
 
 #define RENDERER_GLOBAL_RESOURCE_GROUP (renderer_resource_group_handle) { 0 }
 #define RENDERER_DEFAULT_SAMPLER (renderer_sampler_handle) { 0 }
@@ -31,6 +30,7 @@ typedef_struct(renderer_texture_config);
 typedef_struct(renderer_mesh_config);
 typedef_struct(renderer_sampler_config);
 typedef_struct(renderer_config);
+typedef_struct(renderer_resource_binding_config);
 
 typedef renderer *renderer_handle;
 typedef handle(u64) renderer_graphics_pipeline_handle;
@@ -38,6 +38,7 @@ typedef handle(u64) renderer_resource_group_handle;
 typedef handle(u64) renderer_sampler_handle;
 typedef handle(u64) renderer_mesh_handle;
 typedef handle(u64) renderer_texture_handle;
+typedef handle(u64) renderer_resource_binding;
 
 
 typedef enum 
@@ -147,7 +148,11 @@ struct renderer_resource_group_config
     isize GpuBufferPoolSizeBytes;       /* pool for gpu buffers (ubo, vbo, ebo, ssbo), will default to 512KB if 0 was given */
     isize CpuBufferPoolSizeBytes;       /* pool for resources managed by the cpu (handles, mesh data, etc), will default to 512KB if 0 was given */
     isize UniformBufferSizeBytes;       /* will default to 16KB if 0 was given */
+};
 
+struct renderer_resource_binding_config
+{
+    renderer_resource_group_handle ResourceGroupHandle; /* can be zero-initialized to use the global resource group */
     u32 UniformBufferBinding;   /* must match in shader */
     u32 TextureArrayBinding;    /* must match in shader */
 };
@@ -164,7 +169,7 @@ struct renderer_texture_config
     renderer_sampler_handle SamplerHandle;
     renderer_image_format Format;
     u32 Width, Height;
-    int MipLevels;
+    int MipLevels;          /* will be 1 if 0 was provided */
 };
 
 struct renderer_mesh_config
@@ -176,6 +181,7 @@ struct renderer_mesh_config
 
 struct renderer_config
 {
+    renderer_resource_group_config *GlobalResourceConfig; /* can be NULL */
     profiler *Profiler;             /* can be NULL */
     const char *AppName;            /* can be NULL */
     bool32 ForceTripleBuffering;
@@ -229,9 +235,9 @@ void Renderer_DestroyResourceGroup(
     renderer_handle Renderer, 
     renderer_resource_group_handle ResourceGroup
 );
-void Renderer_BindResourceGroup(
+renderer_resource_binding Renderer_BindResourceGroup(
     renderer_handle Renderer,
-    renderer_resource_group_handle ResourceGroup
+    const renderer_resource_binding_config *Config
 );
 
 renderer_sampler_handle Renderer_CreateSampler(
@@ -270,7 +276,7 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
 
 renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
     renderer_handle Renderer,
-    renderer_resource_group_handle ResourceGroupHandle,
+    renderer_resource_binding ResourceGroupBinding,
     const renderer_graphics_pipeline_config *Config
 );
 
@@ -296,6 +302,9 @@ void Renderer_UpdateUniformBuffer(
     renderer_resource_group_handle ResourceGroup,
     const void *Data, isize SizeBytes
 );
+
+/* NOTE: get the gpu-usable index from a texture handle */
+u32 Renderer_GetTextureIndex(renderer_handle Renderer, renderer_texture_handle TextureHandle);
 
 /* call on a specific event */
 void Renderer_OnFramebufferResize(renderer_handle Renderer, int Width, int Height);

@@ -3,8 +3,8 @@
 COMMON_LIB_PATH=../..
 
 CC=gcc
-CCF=-I"$(COMMON_LIB_PATH)" -I"." -I"./deps" -std=gnu99 -g -Wall -Wextra 
-DEPS_CCF=-I"$(COMMON_LIB_PATH)" -I"." -O2
+CCF=-I"$(COMMON_LIB_PATH)" -I"." -I"./deps" -std=gnu99 -g -Wall -Wextra -D_DEBUG
+DEPS_CCF=-I"$(COMMON_LIB_PATH)" -I"." -O2 -D_DEBUG
 LDF=-lvulkan -lm
 EXE_NAME=bin/test
 

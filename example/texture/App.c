@@ -49,20 +49,19 @@ void App_OnLoop(app *App)
     {
         double FrameTime = Platform_Get(FrameTime);
         char Title[256];
-        snprintf(Title, sizeof Title, "tframe: %fs, fps: %f -- selected texture: %d (%d)", 
+        snprintf(Title, sizeof Title, "tframe: %fs, fps: %f -- selected texture: %d", 
             FrameTime, 
             1 / FrameTime, 
-            App->SelectedTexture, 
-            App->Textures[App->SelectedTexture].Value
+            App->SelectedTexture
         );
         Platform_Set(WindowTitle, Title);
     }
 
     {
         uniform_buffer UniformBuffer = {
-            .TextureIndex = App->Textures[App->SelectedTexture].Value,
+            .TextureIndex = Renderer_GetTextureIndex(App->Renderer, App->Textures[App->SelectedTexture]),
         };
-        Renderer_UpdateUniformBuffer(App->Renderer, &UniformBuffer, sizeof UniformBuffer);
+        Renderer_UpdateUniformBuffer(App->Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &UniformBuffer, sizeof UniformBuffer);
     }
 }
 
@@ -88,7 +87,7 @@ void App_OnEvent(app *App, platform_event Event)
     case PLATFORM_EVENT_KEY:
     {
         platform_key_event Key = Event.As.Key;
-        if (IN_RANGE('0', Key.Type, '3'))
+        if (IN_RANGE('0', Key.Type, '0' + TEXTURE_COUNT - 1))
         {
             App->SelectedTexture = Key.Type - '0';
         }
@@ -108,9 +107,12 @@ void App_OnEvent(app *App, platform_event Event)
 
 
 
-#ifdef NEW_API
-internal renderer_texture_handle LoadTexture(renderer_handle Renderer, renderer_sampler_handle Sampler, const char *FilePath, arena_alloc *Scratchpad)
-{
+internal renderer_texture_handle LoadTexture(
+    renderer_handle Renderer, 
+    renderer_sampler_handle Sampler, 
+    const char *FilePath, 
+    arena_alloc *Scratchpad
+) {
     renderer_texture_handle Texture = { 0 };
     arena_snapshot Snapshot = Arena_SaveSnapshot(Scratchpad);
     u8 *Image = NULL;
@@ -136,18 +138,13 @@ internal renderer_texture_handle LoadTexture(renderer_handle Renderer, renderer_
         .Format = RENDERER_IMAGE_FORMAT_RGBA,
         .Width = Width,
         .Height = Height,
-        .Sampler = Sampler,
+        .SamplerHandle = Sampler,
     };
     Texture = Renderer_CreateStaticTexture(Renderer,
         RENDERER_GLOBAL_RESOURCE_GROUP,
         &Config, 
         Image
     );
-    if (!RENDERER_IS_HANDLE_VALID(Texture))
-    {
-        ErrorMessage = "Renderer_UploadTexture()";
-        goto Error;
-    }
 
     Arena_RestoreSnapshot(Scratchpad, Snapshot);
     ASSERT(Texture.Value != 0);
@@ -160,58 +157,25 @@ Error:
     Arena_RestoreSnapshot(Scratchpad, Snapshot);
     return (renderer_texture_handle) { 0 };
 }
-#else
-internal renderer_texture_handle LoadTexture(renderer_handle Renderer, const char *FilePath, arena_alloc *Scratchpad)
-{
-    renderer_texture_handle Texture = { 0 };
-    arena_snapshot Snapshot = Arena_SaveSnapshot(Scratchpad);
-    u8 *Image = NULL;
-    const char *ErrorMessage = "";
-
-    platform_read_file_result ReadResult = Platform_ReadEntireFile(FilePath, Scratchpad, PLATFORM_FILE_TYPE_BINARY, 0);
-    if (ReadResult.ErrorMessage)
-    {
-        ErrorMessage = ReadResult.ErrorMessage;
-        goto Error;
-    }
-
-    int Width = 0, Height = 0, Channels = 0;
-    stbi_set_flip_vertically_on_load(true);
-    Image = stbi_load_from_memory(ReadResult.Buffer.Data, ReadResult.Buffer.Count, &Width, &Height, &Channels, 4);
-    if (!Image)
-    {
-        ErrorMessage = "stbi_load_from_memory()";
-        goto Error;
-    }
-
-    Texture = Renderer_UploadTexture(Renderer, Image, Width, Height, 1, RENDERER_IMAGE_FORMAT_RGBA);
-    if (Texture.Value == 0)
-    {
-        ErrorMessage = "Renderer_UploadTexture()";
-        goto Error;
-    }
-
-    Arena_RestoreSnapshot(Scratchpad, Snapshot);
-    ASSERT(Texture.Value != 0);
-    free(Image);
-    return Texture;
-
-Error:
-    (void)eprintfln("[ERROR]: Unable to load image, defaulting to texture 0 (should be bright pink): %s", ErrorMessage);
-    free(Image);
-    Arena_RestoreSnapshot(Scratchpad, Snapshot);
-    return (renderer_texture_handle) { 0 };
-}
-#endif
 
 internal void InitRenderer(app *App, const char *AppName)
 {
     /* create the renderer */
     {
-        int FramesInFlight = 3;
-        bool32 ForceTripleBuffering = false;
-        profiler *Profiler = NULL;
-        App->Renderer = Renderer_Init(AppName, FramesInFlight, ForceTripleBuffering, Profiler);
+        renderer_config Config = {
+            .AppName = AppName,
+            .FramesInFlight = 3,
+        };
+        App->Renderer = Renderer_Create(&Config);
+
+        /* configure */
+        {
+            renderer_msaa_flags Samples = Renderer_GetAvailableMSAAFlags(App->Renderer);
+            if ((Samples & RENDERER_MSAA_4X))
+            {
+                Renderer_SetScreenMSAA(App->Renderer, RENDERER_MSAA_4X);
+            }
+        }
     }
 
     /* create a full screen mesh */
@@ -238,7 +202,6 @@ internal void InitRenderer(app *App, const char *AppName)
             0, 1, 2,
             2, 3, 0
         };
-#ifdef NEW_API
         renderer_mesh_config MeshConfig = {
             .IndexCount = 6,
             .VertexCount = 4,
@@ -250,15 +213,6 @@ internal void InitRenderer(app *App, const char *AppName)
             Vertices, 
             Indices
         );
-#else
-        App->FullScreenMesh = Renderer_CreateMesh(App->Renderer, sizeof Vertices, sizeof Indices);
-        renderer_result Result = Renderer_UpdateMesh(App->Renderer, 
-            App->FullScreenMesh, 
-            Vertices, STATIC_ARRAY_SIZE(Vertices), sizeof Vertices[0], 
-            Indices, STATIC_ARRAY_SIZE(Indices)
-        );
-        UNREACHABLE_IF(Result != RENDERER_SUCCESS, "Renderer_UpdateMesh()");
-#endif
     }
 
     /* textures */
@@ -266,23 +220,24 @@ internal void InitRenderer(app *App, const char *AppName)
         const char *TextureNames[] = {
             "assets/gradient.bmp",
         };
-#ifndef NEW_API
-        for (uint i = 0; i < STATIC_ARRAY_SIZE(TextureNames); i++)
-        {
-            App->Textures[i] = LoadTexture(App->Renderer, TextureNames[i], &App->Arena);
-        }
-#else
         renderer_sampler_config SamplerConfig = {
             .MagFilter = RENDERER_FILTER_LINEAR,
             .MinFilter = RENDERER_FILTER_LINEAR,
-            .EnableAnisotrophyFiltering = true,
+            .EnableAnisotropyFiltering = false,
         };
         renderer_sampler_handle Sampler = Renderer_CreateSampler(App->Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &SamplerConfig);
         for (uint i = 0; i < STATIC_ARRAY_SIZE(TextureNames); i++)
         {
             App->Textures[i] = LoadTexture(App->Renderer, Sampler, TextureNames[i], &App->Arena);
         }
-#endif
+    }
+
+    {
+        renderer_resource_binding_config Config = {
+            .UniformBufferBinding = 0,
+            .TextureArrayBinding = 1,
+        };
+        App->ResourceGroupBinding = Renderer_BindResourceGroup(App->Renderer, &Config);
     }
 
     /* upload shader and create graphics pipeline */
@@ -330,18 +285,10 @@ internal void InitRenderer(app *App, const char *AppName)
             .FragShaderCodeSizeBytes = FragmentShaderCodeSizeBytes,
             .VertexDescription = &VertexDesc,
         };
-#ifdef NEW_API
-        App->GraphicsPipeline = Renderer_CreateGraphicsPipeline(App->Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &GraphicsPipelineConfig);
-#else
-        int MSAASampleCount = Renderer_IsMSAASampleCountSupported(App->Renderer, 4)? 4 : 1;
-        int UniformBufferSizeBytes = sizeof(uniform_buffer);
-        int GraphicsPipelineCount = 1;
-        Renderer_CreateGraphicsPipelines(App->Renderer, 
-            UniformBufferSizeBytes, 
-            MSAASampleCount, 
-            GraphicsPipelineCount, &GraphicsPipelineConfig, 
-            &App->GraphicsPipeline
+        App->GraphicsPipeline = Renderer_CreateGraphicsPipeline(
+            App->Renderer, 
+            App->ResourceGroupBinding, 
+            &GraphicsPipelineConfig
         );
-#endif
     }
 }

@@ -10,6 +10,7 @@ struct app
     renderer_mesh_handle FullScreenMesh;
     renderer_graphics_pipeline_handle GraphicsPipeline;
     renderer_resource_group_handle ResourceGroup;
+    renderer_resource_binding ResourceBinding;
 };
 
 #endif /* APP_H */

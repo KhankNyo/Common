@@ -6,6 +6,8 @@
 #include "Arena.h"
 #include "FreeList.h"
 
+#include "Containers.h"
+
 
 #ifndef VKM_MIN_ALIGNMENT
 #  define VKM_MIN_ALIGNMENT 64
@@ -67,7 +69,7 @@ struct vkm_device_memory
 };
 struct vkm_device_memory_node
 {
-    vkm_device_memory_node *Next, *Prev;
+    double_link(vkm_device_memory_node);
     i32 SizeAligned;
     i32 OffsetAligned;
     i16 DeviceMemoryIndex;
@@ -75,7 +77,7 @@ struct vkm_device_memory_node
 };
 struct vkm_buffer_chunk
 {
-    vkm_buffer_chunk *Next, *Prev;
+    double_link(vkm_buffer_chunk);
     i32 SizeAligned;
     i32 OffsetAligned;
     i32 EntryIndex;

@@ -4,32 +4,16 @@
 #include "Common.h"
 #include "Renderer-Core.h"
 #include "Profiler.h"
-#include "Slice.h"
 
 #include "Memory.h"
 #include "FreeList.h"
 #include "Arena.h"
+#include "Containers.h"
 
 #include "Common-Vulkan.h"
 #include "Common-Renderer-Vulkan-VkMalloc.h"
 
 #include "Platform-Core.h"
-
-
-/* TODO: move this somewhere else */
-#define VkDynamicArray_ResizeCapacity(p_freelist, p_da, isize_new_capacity) do {\
-    (p_da)->Capacity = isize_new_capacity;\
-    FreeList_ReallocArray(p_freelist, &(p_da)->Data, (p_da)->Capacity);\
-} while (0)
-#define VkDynamicArray_Push(p_freelist, p_da, ...) do {\
-    typeof(p_freelist) freelist_ = p_freelist;\
-    typeof(p_da) dynamic_array_ = p_da;\
-    if (dynamic_array_->Count >= dynamic_array_->Capacity) {\
-        VkDynamicArray_ResizeCapacity(freelist_, dynamic_array_, dynamic_array_->Capacity == 0? 32 : dynamic_array_->Capacity * 2);\
-    }\
-    dynamic_array_->Data[dynamic_array_->Count] = __VA_ARGS__;\
-    dynamic_array_->Count++;\
-} while (0)
 
 
 
@@ -49,12 +33,6 @@ typedef_struct(vk_swapchain);
 typedef_struct(vk_graphics_pipeline);
 
 typedef_struct(vk_texture);
-typedef dynamic_array(vk_texture) vk_texture_array;
-typedef dynamic_array(VkSurfaceFormatKHR) vk_surface_format_array;
-typedef dynamic_array(VkPresentModeKHR) vk_present_mode_array;
-typedef dynamic_array(VkImage) vk_image_array;
-typedef dynamic_array(VkImageView) vk_image_view_array;
-typedef dynamic_array(VkFramebuffer) vk_framebuffer_array; 
 typedef_struct(vk_frame_data);
 typedef_struct(vk_device_memory_image);
 typedef_struct(vk_swapchain_image);
@@ -63,6 +41,8 @@ typedef_struct(vk_uniform_buffer);
 typedef_struct(vk_render_target);
 typedef_struct(vk_render_frame);
 typedef_struct(vk_resource_group);
+
+typedef_struct(vk_update_resource);
 
 
 struct vk_texture
@@ -118,15 +98,15 @@ struct vk_gpu_list
 struct vk_swapchain_support_config
 {
     VkSurfaceCapabilitiesKHR Capabilities;
-    vk_surface_format_array Formats;
-    vk_present_mode_array PresentModes;
+    slice(VkSurfaceFormatKHR) Formats;
+    slice(VkPresentModeKHR) PresentModes;
 };
 /* NOTE: every item (texture, samplers, graphics pipelines) allocated using vk_resource_group is a u64 consisting of: 
  *      Value[63:log2(VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT)] -> bottom bits are zeroed to get a pointer to vk_resource_group
  *      Value[log2(VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT)-1:0] -> index of the item */
 struct vk_resource_group
 {
-    vk_resource_group *Next, *Prev;
+    double_link(vk_resource_group);
     vkm GpuAllocator;
     arena_alloc CpuArena;
     freelist_alloc CpuAllocator; /* NOTE: free list is owned by the arena */
@@ -155,10 +135,9 @@ struct vk_resource_group
     VkDescriptorSet *DescriptorSets;
 };
 
-typedef_struct(vk_update_resource);
 struct vk_update_resource
 {
-    vk_update_resource *Next;
+    single_link(vk_update_resource);
     void **UniformBuffersDst;
     void *UniformBufferSrc;
     isize UniformBufferSizeBytes;

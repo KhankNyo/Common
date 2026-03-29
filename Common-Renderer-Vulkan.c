@@ -83,15 +83,15 @@ force_inline vk_resource_group_and_index Vulkan_ResourceGroup_ExtractHandle(u64 
     };
 }
 
-internal vk_resource_group *Vulkan_GetVkResourceGroup(renderer *Vk, renderer_resource_group_handle Handle)
+internal vk_resource_group *Vulkan_GetVkResourceGroup(renderer *Vk, u64 Handle)
 {
-    if (0 == Handle.Value)
+    if (0 == Handle)
     {
         ASSERT(Vk->GlobalResourceGroup);
         return Vk->GlobalResourceGroup;
     }
 
-    vk_resource_group *ResourceGroup = (vk_resource_group *)Handle.Value;
+    vk_resource_group *ResourceGroup = (vk_resource_group *)Handle;
     return ResourceGroup;
 }
 
@@ -111,7 +111,6 @@ internal vk_mesh *Vulkan_ResourceGroup_GetMesh(renderer *Vk, renderer_mesh_handl
 {
     (void)Vk;
     ASSERT(Handle.Value != 0, "no default mesh");
-
     return (vk_mesh *)Handle.Value;
 }
 
@@ -143,6 +142,7 @@ internal VkBool32 Vulkan_DebugCallback(
     {
         Vulkan_LogLn("\nWARNING: [%s] Code %d : %s", pLayerPrefix, MsgCode, Msg);
     }
+    UNREACHABLE();
     return VK_FALSE;
 }
 
@@ -205,7 +205,6 @@ internal VkInstance Vulkan_CreateInstance(
 ) {
     NOT_DEBUG_ONLY(
         /* to shut the compiler up */
-        (void)g_VkValidationLayerNames;
         (void)Vulkan_CreateDebugCallback;
     );
 
@@ -281,7 +280,8 @@ internal vk_swapchain_support_config Vulkan_QuerySwapchainSupportConfig(
     vkGetPhysicalDeviceSurfaceFormatsKHR(PhysDevice, WindowSurface, &FormatCount, NULL);
     if (FormatCount)
     {
-        Arena_AllocDynamicArray(Arena, &Config.Formats, FormatCount, FormatCount);
+        Config.Formats.Count = FormatCount;
+        Arena_AllocArrayNonZero(Arena, &Config.Formats.Data, FormatCount);
         vkGetPhysicalDeviceSurfaceFormatsKHR(PhysDevice, WindowSurface, &FormatCount, Config.Formats.Data);
     }
 
@@ -289,7 +289,7 @@ internal vk_swapchain_support_config Vulkan_QuerySwapchainSupportConfig(
     vkGetPhysicalDeviceSurfacePresentModesKHR(PhysDevice, WindowSurface, &PresentModeCount, NULL);
     if (PresentModeCount)
     {
-        Arena_AllocDynamicArray(Arena, &Config.PresentModes, PresentModeCount, PresentModeCount);
+        Arena_AllocArray(Arena, &Config.PresentModes.Data, PresentModeCount);
         vkGetPhysicalDeviceSurfacePresentModesKHR(
             PhysDevice, WindowSurface, &PresentModeCount, Config.PresentModes.Data
         );
@@ -633,7 +633,7 @@ internal vk_swapchain Vulkan_CreateSwapchain(
         {
             {
                 VkSurfaceFormatKHR *Found = NULL;
-                dynamic_array_foreach(&Config.Formats, i)
+                DynamicArray_Foreach(&Config.Formats, i)
                 {
                     if (i->format == VK_FORMAT_B8G8R8A8_SRGB 
                     && i->colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR)
@@ -660,7 +660,7 @@ internal vk_swapchain Vulkan_CreateSwapchain(
             }
             else
             {
-                dynamic_array_foreach(&Config.PresentModes, i)
+                DynamicArray_Foreach(&Config.PresentModes, i)
                 {
                     /* triple buffering my beloved */
                     if (*i == VK_PRESENT_MODE_MAILBOX_KHR)
@@ -1594,8 +1594,8 @@ internal void Vulkan_RecordCommandBuffer(
                             .y = Group->Scissor.OffsetY,
                         },
                         .extent = {
-                            .width = Group->Scissor.Width == 0? Swapchain->Width : Group->Scissor.Width,
-                            .height = Group->Scissor.Height == 0? Swapchain->Height : Group->Scissor.Height,
+                            .width = Group->Scissor.Width == 0? (u32)Swapchain->Width : Group->Scissor.Width,
+                            .height = Group->Scissor.Height == 0? (u32)Swapchain->Height : Group->Scissor.Height,
                         },
                     }; 
 
@@ -1861,9 +1861,10 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
     /* update resources */
     {
         vk_update_resource *Last = Vk->UpdateResourceHead;
-        for (vk_update_resource *i = Vk->UpdateResourceHead; i; Last = i, i = i->Next)
+        LinkedList_Foreach(Vk->UpdateResourceHead, i)
         {
             memcpy(i->UniformBuffersDst[Vk->CurrentFrame], i->UniformBufferSrc, i->UniformBufferSizeBytes);
+            Last = i;
         }
 
         if (Last)
@@ -2013,18 +2014,21 @@ renderer_handle Renderer_Create(const renderer_config *Config)
 
     /* default/global resource group */
     {
-        renderer_resource_group_config ResourceConfig = { 
-            .CpuBufferPoolSizeBytes = 1*MB,
-            .GpuCpuMemoryPoolSizeBytes = 8*MB,
-            .GpuLocalMemoryPoolSizeBytes = 256*MB,
-            .GpuBufferPoolSizeBytes = 1*MB,
-
-            .UniformBufferBinding = 0,
-            .UniformBufferSizeBytes = 1, /* TODO: put a useful uniform buffer here */
-
-            .TextureArrayBinding = 1,
-        };
-        renderer_resource_group_handle ResourceGroup = Renderer_CreateResourceGroup(Vk, &ResourceConfig);
+        renderer_resource_group_handle ResourceGroup;
+        if (Config->GlobalResourceConfig)
+        {
+            ResourceGroup = Renderer_CreateResourceGroup(Vk, Config->GlobalResourceConfig);
+        }
+        else
+        {
+            renderer_resource_group_config ResourceConfig = { 
+                .CpuBufferPoolSizeBytes = 1*MB,
+                .GpuCpuMemoryPoolSizeBytes = 8*MB,
+                .GpuLocalMemoryPoolSizeBytes = 256*MB,
+                .GpuBufferPoolSizeBytes = 1*MB,
+            };
+            ResourceGroup = Renderer_CreateResourceGroup(Vk, &ResourceConfig);
+        }
         Vk->GlobalResourceGroup = (vk_resource_group *)ResourceGroup.Value;
         ASSERT(Vk->ResourceGroupHead == Vk->GlobalResourceGroup);
     }
@@ -2126,21 +2130,21 @@ void Renderer_SetScreenMSAA(renderer_handle Vk, renderer_msaa_flags OneFlag)
 
 internal u32 Vulkan_ResourceGroup_PushSampler(vk_resource_group *ResourceGroup, VkSampler Sampler)
 {
-    VkDynamicArray_Push(&ResourceGroup->CpuAllocator, &ResourceGroup->Samplers, Sampler);
+    DynamicArray_Push(&ResourceGroup->CpuAllocator, &ResourceGroup->Samplers, Sampler);
     u32 Index = ResourceGroup->Samplers.Count - 1;
     return Index;
 }
 
 internal u32 Vulkan_ResourceGroup_PushTexture(vk_resource_group *ResourceGroup, const vk_texture *Texture)
 {
-    VkDynamicArray_Push(&ResourceGroup->CpuAllocator, &ResourceGroup->Textures, *Texture);
+    DynamicArray_Push(&ResourceGroup->CpuAllocator, &ResourceGroup->Textures, *Texture);
     u32 Index = ResourceGroup->Textures.Count - 1;
     return Index;
 }
 
 internal u32 Vulkan_ResourceGroup_PushGraphicsPipeline(vk_resource_group *ResourceGroup, const vk_graphics_pipeline *GraphicsPipeline)
 {
-    VkDynamicArray_Push(&ResourceGroup->CpuAllocator, &ResourceGroup->GraphicsPipelines, *GraphicsPipeline);
+    DynamicArray_Push(&ResourceGroup->CpuAllocator, &ResourceGroup->GraphicsPipelines, *GraphicsPipeline);
     u32 Index = ResourceGroup->GraphicsPipelines.Count - 1;
     return Index;
 }
@@ -2219,9 +2223,9 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
 
     /* uniform buffer */
     {
-        FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBuffers, Vk->FramesInFlight);
-        FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBuffersMapped, Vk->FramesInFlight);
-        FreeList_ReallocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBufferTmp, UniformBufferSizeBytes);
+        FreeList_AllocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBuffers, Vk->FramesInFlight);
+        FreeList_AllocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBuffersMapped, Vk->FramesInFlight);
+        FreeList_AllocArray(&ResourceGroup->CpuAllocator, &ResourceGroup->UniformBufferTmp, UniformBufferSizeBytes);
         ResourceGroup->UniformBufferTmpCapacity = UniformBufferSizeBytes;
         for (int i = 0; i < Vk->FramesInFlight; i++)
         {
@@ -2232,12 +2236,14 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
                     .MemoryCapacityBytes = UniformBufferSizeBytes,
                 }
             );
-            vkm_buffer_info BufferInfo = Vkm_GetBufferInfo(
-                &ResourceGroup->GpuAllocator, 
-                ResourceGroup->UniformBuffers[i]
+            DEBUG_ONLY(
+                vkm_buffer_info BufferInfo = Vkm_GetBufferInfo(
+                    &ResourceGroup->GpuAllocator, 
+                    ResourceGroup->UniformBuffers[i]
+                )
             );
             ASSERT(BufferInfo.CapacityBytes <= Vk->Gpus.Selected.Properties.limits.maxUniformBufferRange, 
-                "rounded: %ld, provided: %ld, max allowed by device: %d", BufferInfo.CapacityBytes, UniformBufferSizeBytes, Vk->Gpus.Selected.Properties.limits.maxUniformBufferRange
+                "UNIFORM BUFFER TOO BIG, rounded: %ld, provided: %ld, max allowed by device: %d", BufferInfo.CapacityBytes, UniformBufferSizeBytes, Vk->Gpus.Selected.Properties.limits.maxUniformBufferRange
             );
             ResourceGroup->UniformBuffersMapped[i] = Vkm_MapBufferMemory(
                 &ResourceGroup->GpuAllocator, 
@@ -2273,11 +2279,86 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
         };
         VK_CHECK(vkCreateDescriptorPool(Device, &CreateInfo, NULL, &DescriptorPool));
     }
+    ResourceGroup->DescriptorPool = DescriptorPool;
+}
+
+internal void Vulkan_ResourceGroup_Deinit(renderer *Vk, vk_resource_group *ResourceGroup, bool32 ShouldDestroyDefaultResources)
+{
+    /* TODO: wait for resources in use? */
+    VkDevice Device = Vulkan_GetDevice(Vk);
+
+    isize Start = ShouldDestroyDefaultResources? 0 : 1;
+    for (isize i = Start; i < ResourceGroup->Samplers.Count; i++)
+    {
+        vkDestroySampler(Device, ResourceGroup->Samplers.Data[i], NULL);
+    }
+    for (isize i = 0; i < ResourceGroup->GraphicsPipelines.Count; i++)
+    {
+        Vulkan_DestroyGraphicsPipeline(Device, &ResourceGroup->GraphicsPipelines.Data[i]);
+    }
+    vkDestroyDescriptorSetLayout(Device, ResourceGroup->DescriptorSetLayout, NULL);
+    vkDestroyDescriptorPool(Device, ResourceGroup->DescriptorPool, NULL);
+
+    /* NOTE: don't need to destroy the free list since the arena owns it */
+    Vkm_Destroy(&ResourceGroup->GpuAllocator);
+    Arena_Destroy(&ResourceGroup->CpuArena);
+}
+
+
+renderer_resource_group_handle Renderer_CreateResourceGroup(
+    renderer *Vk, 
+    const renderer_resource_group_config *Config
+) {
+    vk_resource_group *ResourceGroup;
+    if (NULL == Vk->ResourceGroupFreeSlots)
+    {
+        /* create a new group */
+        Arena_ScopedAlignment(&Vk->Arena, VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT)
+        {
+            ResourceGroup = Arena_Alloc(&Vk->Arena, sizeof *ResourceGroup);
+        }
+    }
+    else
+    {
+        /* use one from the free list */
+        DoubleLink_Pop(&Vk->ResourceGroupFreeSlots, &ResourceGroup);
+    }
+
+    Vulkan_ResourceGroup_Init(Vk, ResourceGroup, Config);
+
+    DoubleLink_Push(&Vk->ResourceGroupHead, ResourceGroup);
+    renderer_resource_group_handle Handle = { (u64)ResourceGroup };
+    return Handle;
+}
+
+void Renderer_DestroyResourceGroup(
+    renderer *Vk, 
+    renderer_resource_group_handle ResourceGroupHandle
+) {
+    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
+    ASSERT(ResourceGroup != Vk->GlobalResourceGroup, "Cannot destroy global resource group.");
+
+    DoubleLink_Unlink(&Vk->ResourceGroupHead, ResourceGroup);
+    DoubleLink_Push(&Vk->ResourceGroupFreeSlots, ResourceGroup);
+
+    bool32 ShouldDestroyDefaultResources = false;
+    Vulkan_ResourceGroup_Deinit(Vk, ResourceGroup, ShouldDestroyDefaultResources);
+}
+
+renderer_resource_binding Renderer_BindResourceGroup(
+    renderer *Vk, 
+    const renderer_resource_binding_config *Config
+) {
+    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, Config->ResourceGroupHandle.Value);
+    arena_alloc *Arena = &ResourceGroup->CpuArena;
+    VkDevice Device = Vulkan_GetDevice(Vk);
+
+    /* TODO: not wait until the gpu is in idle state? */
+    vkDeviceWaitIdle(Device);
 
     /* descriptor sets and layout */
-    VkDescriptorSetLayout DescriptorSetLayout;
     VkDescriptorSet *DescriptorSets;
-    arena_alloc *Arena = &ResourceGroup->CpuArena;
+    VkDescriptorSetLayout DescriptorSetLayout;
     Arena_AllocArray(Arena, &DescriptorSets, Vk->FramesInFlight);
     Arena_Scope(Arena)
     {
@@ -2315,135 +2396,23 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
         }
         VkDescriptorSetAllocateInfo AllocInfo = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool = DescriptorPool,
+            .descriptorPool = ResourceGroup->DescriptorPool,
             .descriptorSetCount = Vk->FramesInFlight,
             .pSetLayouts = DescriptorSetLayouts,
         };
         VK_CHECK(vkAllocateDescriptorSets(Device, &AllocInfo, DescriptorSets));
     }
-
+    if (ResourceGroup->DescriptorSets && ResourceGroup->DescriptorSetLayout)
+    {
+        RUNTIME_TODO("Destroy previous descriptor sets and set layout?");
+    }
     ResourceGroup->TextureArrayBinding = Config->TextureArrayBinding;
     ResourceGroup->UniformBufferBinding = Config->UniformBufferBinding;
-    ResourceGroup->DescriptorPool = DescriptorPool;
     ResourceGroup->DescriptorSetLayout = DescriptorSetLayout;
     ResourceGroup->DescriptorSets = DescriptorSets;
-}
 
-internal void Vulkan_ResourceGroup_Deinit(renderer *Vk, vk_resource_group *ResourceGroup, bool32 ShouldDestroyDefaultResources)
-{
-    /* TODO: wait for resources in use? */
-    VkDevice Device = Vulkan_GetDevice(Vk);
-
-    isize Start = ShouldDestroyDefaultResources? 0 : 1;
-    for (isize i = Start; i < ResourceGroup->Samplers.Count; i++)
-    {
-        vkDestroySampler(Device, ResourceGroup->Samplers.Data[i], NULL);
-    }
-    for (isize i = 0; i < ResourceGroup->GraphicsPipelines.Count; i++)
-    {
-        Vulkan_DestroyGraphicsPipeline(Device, &ResourceGroup->GraphicsPipelines.Data[i]);
-    }
-    vkDestroyDescriptorSetLayout(Device, ResourceGroup->DescriptorSetLayout, NULL);
-    vkDestroyDescriptorPool(Device, ResourceGroup->DescriptorPool, NULL);
-
-    /* NOTE: don't need to destroy the free list since the arena owns it */
-    Vkm_Destroy(&ResourceGroup->GpuAllocator);
-    Arena_Destroy(&ResourceGroup->CpuArena);
-}
-
-
-renderer_resource_group_handle Renderer_CreateResourceGroup(
-    renderer *Vk, 
-    const renderer_resource_group_config *Config
-) {
-    vk_resource_group *ResourceGroup = Vk->ResourceGroupFreeSlots;
-    if (NULL == Vk->ResourceGroupFreeSlots)
-    {
-        /* create a new group */
-        Arena_ScopedAlignment(&Vk->Arena, VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT)
-        {
-            ResourceGroup = Arena_Alloc(&Vk->Arena, sizeof *ResourceGroup);
-        }
-    }
-    else
-    {
-        /* use one from the free list */
-        vk_resource_group *Next = ResourceGroup->Next;
-        vk_resource_group *Prev = ResourceGroup->Prev;
-        if (Prev)
-            Prev->Next = Next;
-        else
-            Vk->ResourceGroupFreeSlots = Next;
-        if (Next)
-            Next->Prev = Prev;
-    }
-
-    Vulkan_ResourceGroup_Init(Vk, ResourceGroup, Config);
-
-    /* link list */
-    if (NULL == Vk->ResourceGroupHead)
-    {
-        Vk->ResourceGroupHead = ResourceGroup;
-    }
-    else
-    {
-        vk_resource_group *Head = Vk->ResourceGroupHead;
-
-        ResourceGroup->Next = Head;
-        Head->Prev = ResourceGroup;
-        Vk->ResourceGroupHead = ResourceGroup;
-    }
-    renderer_resource_group_handle Handle = { (u64)ResourceGroup };
-    return Handle;
-}
-
-void Renderer_DestroyResourceGroup(
-    renderer *Vk, 
-    renderer_resource_group_handle ResourceGroupHandle
-) {
-    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle);
-    vk_resource_group *Next = ResourceGroup->Next;
-    vk_resource_group *Prev = ResourceGroup->Prev;
-    ASSERT(ResourceGroup != Vk->GlobalResourceGroup, "Cannot destroy global resource group.");
-
-    /* unlink */
-    if (Prev)
-    {
-        Prev->Next = Next;
-    }
-    else 
-    {
-        Vk->ResourceGroupHead = Next;
-    }
-    if (Next)
-    {
-        Next->Prev = Prev;
-    }
-
-    bool32 ShouldDestroyDefaultResources = false;
-    Vulkan_ResourceGroup_Deinit(Vk, ResourceGroup, ShouldDestroyDefaultResources);
-
-    /* put in free list */
-    {
-        ResourceGroup->Prev = NULL;
-        ResourceGroup->Next = Vk->ResourceGroupFreeSlots;
-        if (Vk->ResourceGroupFreeSlots)
-            Vk->ResourceGroupFreeSlots->Prev = ResourceGroup;
-        Vk->ResourceGroupFreeSlots = ResourceGroup;
-    }
-}
-
-void Renderer_BindResourceGroup(
-    renderer *Vk, 
-    renderer_resource_group_handle ResourceGroupHandle
-) {
-    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle);
-    VkDevice Device = Vulkan_GetDevice(Vk);
-    /* TODO: not wait until the gpu is in idle state? */
-    vkDeviceWaitIdle(Device);
 
     /* udpate descriptor set */
-    arena_alloc *Arena = &ResourceGroup->CpuArena;
     Arena_Scope(Arena)
     {
         ASSERT(ResourceGroup->Textures.Count <= VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT);
@@ -2471,7 +2440,6 @@ void Renderer_BindResourceGroup(
                 .offset = BufferInfo.OffsetBytes,
                 .range = BufferInfo.CapacityBytes,
             };
-            UNREACHABLE_IF(BufferInfo.CapacityBytes > 64*KB, "uni");
         }
 
         for (int i = 0; i < Vk->FramesInFlight; i++)
@@ -2499,6 +2467,7 @@ void Renderer_BindResourceGroup(
             vkUpdateDescriptorSets(Device, STATIC_ARRAY_SIZE(Writes), Writes, 0, NULL);
         }
     }
+    return (renderer_resource_binding) { .Value = (u64)ResourceGroup, };
 }
 
 
@@ -2522,7 +2491,7 @@ renderer_sampler_handle Renderer_CreateSampler(
     const renderer_sampler_config *TextureSamplerConfig
 ) {
     VkDevice Device = Vulkan_GetDevice(Vk);
-    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle);
+    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
 
     VkSampler Sampler;
     {
@@ -2622,7 +2591,8 @@ renderer_texture_handle Renderer_CreateStaticTexture(
     const renderer_texture_config *TextureConfig,
     const void *ImageData
 ) {
-    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle);
+    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
+    int MipLevels = TextureConfig->MipLevels == 0? 1 : TextureConfig->MipLevels;
 
     VkFormat ImageFormat = Vulkan_GetVkFormat(TextureConfig->Format);
 
@@ -2641,7 +2611,7 @@ renderer_texture_handle Renderer_CreateStaticTexture(
             &(vkm_image_config) {
                 .Width = TextureConfig->Width, 
                 .Height = TextureConfig->Height, 
-                .MipLevels = TextureConfig->MipLevels,
+                .MipLevels = MipLevels,
                 .Sample = VK_SAMPLE_COUNT_1_BIT,
                 .Format = ImageFormat,
                 .Tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -2657,7 +2627,7 @@ renderer_texture_handle Renderer_CreateStaticTexture(
             ImageFormat, 
             VK_IMAGE_LAYOUT_UNDEFINED, 
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
-            TextureConfig->MipLevels
+            MipLevels
         );
         Vulkan_CopyBufferToImage(GpuContext, CommandPool,
             ResourceGroup->StagingBufferInfo.Buffer,
@@ -2671,13 +2641,13 @@ renderer_texture_handle Renderer_CreateStaticTexture(
             ImageFormat,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 
-            TextureConfig->MipLevels
+            MipLevels
         );
         /* to shut the compiler up */
         (void)Vulkan_GenerateMipmap;
 #else
         Vulkan_GenerateMipmap(GpuContext, CommandPool, 
-            ImageFormat, TextureImageInfo.Image, TextureConfig->Width, TextureConfig->Height, TextureConfig->MipLevels
+            ImageFormat, TextureImageInfo.Image, TextureConfig->Width, TextureConfig->Height, MipLevels
         );
 #endif
     }
@@ -2702,7 +2672,7 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
     const void *VertexBufferPtr,
     const u32 *IndexBufferPtr
 ) {
-    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle);
+    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
 
     isize VertexBufferSizeBytes = MeshConfig->VertexCount * MeshConfig->VertexBufferElementSizeBytes;
     isize IndexBufferSizeBytes = MeshConfig->IndexCount * sizeof(u32);
@@ -2737,10 +2707,10 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
 
 renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
     renderer *Vk,
-    renderer_resource_group_handle ResourceGroupHandle,
+    renderer_resource_binding ResourceBinding,
     const renderer_graphics_pipeline_config *Config
 ) {
-    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle);
+    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceBinding.Value);
     VkDevice Device = Vulkan_GetDevice(Vk);
 
     vk_graphics_pipeline GraphicsPipeline;
@@ -2794,12 +2764,20 @@ renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
 
 
 
+
+u32 Renderer_GetTextureIndex(renderer *Vk, renderer_texture_handle TextureHandle)
+{
+    (void)Vk;
+    vk_resource_group_and_index Value = Vulkan_ResourceGroup_ExtractHandle(TextureHandle.Value);
+    return Value.Handle;
+}
+
 void Renderer_UpdateUniformBuffer(
     renderer *Vk,
     renderer_resource_group_handle ResourceGroupHandle,
     const void *Data, isize SizeBytes
 ) {
-    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle);
+    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
     UNREACHABLE_IF(SizeBytes > ResourceGroup->UniformBufferTmpCapacity, 
         "Uniform buffer size larger than capacity on creation: %lld > %lld",
         (long long)SizeBytes, (long long)ResourceGroup->UniformBufferTmpCapacity
@@ -2810,11 +2788,10 @@ void Renderer_UpdateUniformBuffer(
 
     /* push uniform to be updated */
     {
-        vk_update_resource *Node = Vk->UpdateResourceFree;
-        if (Node)
+        vk_update_resource *Node;
+        if (Vk->UpdateResourceFree)
         {
-            Vk->UpdateResourceFree = Node->Next;
-            Node->Next = NULL;
+            SingleLink_Pop(&Vk->UpdateResourceFree, &Node);
         }
         else
         {
@@ -2822,12 +2799,11 @@ void Renderer_UpdateUniformBuffer(
         }
 
         *Node = (vk_update_resource) {
-            .Next = Vk->UpdateResourceHead,
             .UniformBuffersDst = ResourceGroup->UniformBuffersMapped,
             .UniformBufferSrc = ResourceGroup->UniformBufferTmp,
             .UniformBufferSizeBytes = SizeBytes,
         };
-        Vk->UpdateResourceHead = Node;
+        SingleLink_Push(&Vk->UpdateResourceHead, Node);
     }
 }
 
@@ -2858,12 +2834,10 @@ void Renderer_Destroy(renderer *Vk)
     VkDevice Device = GpuContext->Device;
     vkDeviceWaitIdle(Device);
 
-    for (vk_resource_group *ResourceGroup = Vk->ResourceGroupHead;
-        ResourceGroup;
-        ResourceGroup = ResourceGroup->Next)
+    LinkedList_Foreach(Vk->ResourceGroupHead, i)
     {
-        bool32 ShouldDestroyDefaultResources = ResourceGroup == Vk->GlobalResourceGroup;
-        Vulkan_ResourceGroup_Deinit(Vk, ResourceGroup, ShouldDestroyDefaultResources);
+        bool32 ShouldDestroyDefaultResources = (i == Vk->GlobalResourceGroup);
+        Vulkan_ResourceGroup_Deinit(Vk, i, ShouldDestroyDefaultResources);
     }
     for (int i = 0; i < Vk->FramesInFlight; i++)
     {

@@ -586,7 +586,7 @@ Error:
 
 VkResult Vulkan_Platform_CreateWindowSurface(VkInstance Instance, VkAllocationCallbacks *AllocCallback, VkSurfaceKHR *OutWindowSurface)
 {
-    return glfwCreateWindowSurface(Instance, g_Window, AllocCallback, (void *)OutWindowSurface);
+    return (VkResult)glfwCreateWindowSurface(Instance, g_Window, AllocCallback, (void *)OutWindowSurface);
 }
 
 
