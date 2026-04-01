@@ -45,8 +45,15 @@ typedef_struct(vk_resource_group);
 typedef_struct(vk_update_resource);
 
 
+typedef enum 
+{
+    VULKAN_TEXTURE_STATE_SHADER_READONLY,
+    VULKAN_TEXTURE_STATE_TRANSFER_DST,
+} vk_texture_state;
+
 struct vk_texture
 {
+    vk_texture_state State;
     vkm_image_handle Image;
     VkImageView ImageView;
     VkSampler SamplerReference;

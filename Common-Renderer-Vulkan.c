@@ -1190,6 +1190,15 @@ internal void Vulkan_TransitionImageLayout(
             SrcAccessMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
             DstStageFlags = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         }
+        else if (Old == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && New == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+        {
+            /* make texture transferable */
+            Aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+            SrcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            DstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            SrcStageFlags = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            DstAccessMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        }
         else
         {
             RUNTIME_TODO("%s", __func__);
@@ -2653,6 +2662,7 @@ renderer_texture_handle Renderer_CreateStaticTexture(
     VkSampler Sampler = Vulkan_ResourceGroup_GetSampler(Vk, TextureConfig->SamplerHandle);
 
     u32 Index = Vulkan_ResourceGroup_PushTexture(ResourceGroup, &(vk_texture) {
+        .State = VULKAN_TEXTURE_STATE_SHADER_READONLY,
         .Image = TextureImageHandle,
         .ImageView = TextureImageInfo.ImageView,
         .SamplerReference = Sampler,
@@ -2700,6 +2710,70 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
     Vulkan_TransferDataToGpuLocalMemory(Vk, Vk->CommandPool, ResourceGroup, MeshPtr->VertexBuffer, VertexBufferPtr, VertexBufferSizeBytes);
     Vulkan_TransferDataToGpuLocalMemory(Vk, Vk->CommandPool, ResourceGroup, MeshPtr->IndexBuffer, IndexBufferPtr, IndexBufferSizeBytes);
     return (renderer_mesh_handle) { (u64)MeshPtr };
+}
+
+renderer_texture_handle Renderer_CreateTexture(
+    renderer *Vk, 
+    renderer_resource_group_handle ResourceGroupHandle,
+    const renderer_texture_config *Config
+) {
+    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
+    int MipLevels = Config->MipLevels == 0? 1 : Config->MipLevels;
+    VkDevice Device = Vulkan_GetDevice(Vk);
+
+    vk_texture_state State = VULKAN_TEXTURE_STATE_TRANSFER_DST;
+    vkm_image_handle ImageHandle;
+    VkImageView ImageView;
+    {
+        VkFormat ImageFormat = Vulkan_GetVkFormat(Config->Format);
+        ImageHandle = Vkm_CreateImage(&ResourceGroup->GpuAllocator, &(vkm_image_config) {
+            .Width = Config->Width,
+            .Height = Config->Height,
+            .MipLevels = Config->MipLevels,
+            .Aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+            .Sample = VK_SAMPLE_COUNT_1_BIT,
+            .Format = ImageFormat,
+            .Tiling = VK_IMAGE_TILING_OPTIMAL,
+            .Usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,
+        });
+        vkm_image_info ImageInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, ImageHandle);
+        ImageView = ImageInfo.ImageView;
+
+        Vulkan_TransitionImageLayout(
+            &Vk->GpuContext, 
+            Vk->CommandPool, 
+            ImageInfo.Image, 
+            ImageFormat, 
+            VK_IMAGE_LAYOUT_UNDEFINED, 
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
+            MipLevels
+        );
+    }
+
+    /* TODO: allocate mem for intermediate buffer */
+    TODO("Allocate memory");
+
+    VkSampler Sampler = Vulkan_ResourceGroup_GetSampler(Vk, Config->SamplerHandle);
+    u32 Index = Vulkan_ResourceGroup_PushTexture(ResourceGroup, &(vk_texture) {
+        .State = State,
+        .Image = ImageHandle,
+        .ImageView = ImageView,
+        .SamplerReference = Sampler,
+    });
+    renderer_texture_handle Handle = {
+        .Value = Vulkan_ResourceGroup_MakeHandle(ResourceGroup, Index),
+    };
+    return Handle;
+}
+
+renderer_mesh_handle Renderer_CreateMutableMesh(
+    renderer *Vk, 
+    renderer_resource_group_handle ResourceGroupHandle,
+    const renderer_mesh_config *Config
+) {
+    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
+
+    TODO("Renderer_CreateMutableMesh()");
 }
 
 
