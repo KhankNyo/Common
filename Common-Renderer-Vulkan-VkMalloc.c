@@ -130,6 +130,7 @@ internal int Vkm__GetPixelSizeBytes(VkFormat Format)
     case VK_FORMAT_B8G8R8A8_SINT:
     case VK_FORMAT_B8G8R8A8_SRGB:
     case VK_FORMAT_D24_UNORM_S8_UINT:
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:
         return 4;
     default:
     {
@@ -256,10 +257,10 @@ internal void Vkm__UnlinkNode(vkm_device_memory_node **Head, vkm_device_memory_n
 
 force_inline bool32 Vkm__IsNodeSuitable(const vkm_device_memory_node *Node, i64 SizeBytes, u32 Alignment)
 {
-    i64 SizeRemainBytes = Node->SizeAligned*VKM_MIN_ALIGNMENT;
+    i64 SizeRemainBytes = Memory_AlignSizeDown(Node->SizeAligned*VKM_MIN_ALIGNMENT, Alignment);
     if (SizeRemainBytes < (i64)Alignment)
         return false;
-    return SizeBytes <= Memory_AlignSize(SizeRemainBytes, Alignment);
+    return SizeBytes <= SizeRemainBytes;
 }
 
 internal vkm_device_memory_node *Vkm__GetFreeNode(vkm *Vkm, VkMemoryRequirements Requirements, VkMemoryPropertyFlags MemoryProperties)
@@ -316,6 +317,12 @@ internal vkm_device_memory_node *Vkm__GetFreeNode(vkm *Vkm, VkMemoryRequirements
         else
         {
             Vkm__UnlinkNode(Head, FreeNode);
+            /* make sure offset is aligned to the alignment given by the requirement */
+            i64 NewOffsetAligned = Memory_AlignSize(
+                FreeNode->OffsetAligned, Requirements.alignment / VKM_MIN_ALIGNMENT
+            );
+            FreeNode->SizeAligned -= NewOffsetAligned - FreeNode->OffsetAligned;
+            FreeNode->OffsetAligned = NewOffsetAligned;
         }
     }
     return FreeNode;
@@ -494,6 +501,8 @@ internal vkm_buffer_handle Vkm__CreateBufferRaw(
         VkMemoryRequirements Required = Vkm__GetBufferMemoryRequirements(Vkm, Buffer);
         vkm_device_memory_node *Node = Vkm__AllocateNode(Vkm, Required, BufferMemoryProperties);
         i64 DeviceMemoryOffsetBytes = Node->OffsetAligned * VKM_MIN_ALIGNMENT;
+        /* NOTE: don't use '%' since the expr will be in format string */
+        ASSERT(DeviceMemoryOffsetBytes / Required.alignment * Required.alignment == DeviceMemoryOffsetBytes); 
         vkBindBufferMemory(Vkm->Device, Buffer, Vkm__GetDeviceMemoryHandle(Vkm, Node), DeviceMemoryOffsetBytes);
 
         DynamicArray_Push(&Vkm->FreeList, Pool, (vkm_buffer_pool_entry) {

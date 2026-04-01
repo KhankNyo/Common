@@ -59,11 +59,19 @@ struct memory_alloc_interface
 
 force_inline i64 Memory_AlignSize(i64 Size, u64 Alignment)
 {
-    ASSERT((Alignment & (Alignment - 1)) == 0, "Alignment must be a power of 2");
-    if ((u64)Size & (u64)(Alignment - 1))
-        return ((u64)Size + (u64)Alignment) & ~((u64)Alignment - 1);
+    ASSERT(IS_POWER_OF_2(Alignment), "Alignment must be a power of 2");
+    if ((u64)Size & (Alignment - 1))
+        return ((u64)Size + Alignment) & ~(Alignment - 1);
     else
         return Size;
+}
+
+force_inline i64 Memory_AlignSizeDown(i64 Size, u64 Alignment)
+{
+    ASSERT(IS_POWER_OF_2(Alignment), "Alignment must be a power of 2");
+    if ((u64)Size & (u64)(Alignment - 1))
+        return (u64)Size & ~(Alignment - 1);
+    return Size;
 }
 
 force_inline void *Memory_AlignPointer(void *Pointer, usize Alignment)
