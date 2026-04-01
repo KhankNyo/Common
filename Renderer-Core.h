@@ -18,10 +18,10 @@ extern "C" {
 #define RENDERER_DEFAULT_CPU_BUFFER_POOL_SIZE (512*KB)
 #define RENDERER_DEFAULT_UNIFORM_BUFFER_SIZE (16*KB)
 
+typedef_struct(renderer);
 typedef_struct(renderer_vertex_attributes);
 typedef_struct(renderer_vertex_description);
 typedef_struct(renderer_graphics_pipeline_config);
-typedef_struct(renderer);
 typedef_struct(renderer_draw_pipeline);
 typedef_struct(renderer_draw_pipeline_group);
 typedef_struct(renderer_scissor);

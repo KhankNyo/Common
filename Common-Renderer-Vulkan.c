@@ -1148,85 +1148,83 @@ internal void Vulkan_TransitionImageLayout(
     VkImage Image, VkFormat Format, VkImageLayout Old, VkImageLayout New, u32 MipLevel
 ) {
     VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
+    /* image memory barrier */
     {
-        /* image memory barrier */
+        VkAccessFlags SrcAccessMask;
+        VkAccessFlags DstAccessMask;
+        VkPipelineStageFlags SrcStageFlags;
+        VkPipelineStageFlags DstStageFlags;
+        VkImageAspectFlags Aspect;
+        if (Old == VK_IMAGE_LAYOUT_UNDEFINED && New == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
         {
-            VkAccessFlags SrcAccessMask;
-            VkAccessFlags DstAccessMask;
-            VkPipelineStageFlags SrcStageFlags;
-            VkPipelineStageFlags DstStageFlags;
-            VkImageAspectFlags Aspect;
-            if (Old == VK_IMAGE_LAYOUT_UNDEFINED && New == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
-            {
-                /* texture creation */
-                Aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-                SrcAccessMask = 0;
-                DstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                SrcStageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-                DstStageFlags = VK_PIPELINE_STAGE_TRANSFER_BIT;
-            }
-            else if (Old == VK_IMAGE_LAYOUT_UNDEFINED && New == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-            {
-                /* depth/stencil */
-                Aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-                SrcAccessMask = 0;
-                DstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                SrcStageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-                DstStageFlags = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-                bool32 DepthBufferHasStencil = (
-                    Format == VK_FORMAT_D32_SFLOAT_S8_UINT 
-                    || Format == VK_FORMAT_D24_UNORM_S8_UINT
-                );
-                if (DepthBufferHasStencil)
-                {
-                    Aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
-                }
-            }
-            else if (Old == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && New == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-            {
-                /* texture save */
-                Aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-                SrcStageFlags = VK_ACCESS_TRANSFER_WRITE_BIT;
-                DstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                SrcAccessMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
-                DstStageFlags = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            }
-            else
-            {
-                RUNTIME_TODO("%s", __func__);
-            }
-
-            VkImageMemoryBarrier Barrier = {
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                .image = Image, 
-                .oldLayout = Old,
-                .newLayout = New,
-                .subresourceRange = {
-                    .aspectMask = Aspect,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                    .baseMipLevel = 0,
-                    .levelCount = MipLevel,
-                },
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .srcAccessMask = SrcAccessMask, 
-                .dstAccessMask = DstAccessMask, 
-            };
-            /* NOTE: all barriers are submitted by this function, 
-               other barriers: 
-                    VkBufferMemoryBarrier
-                    VkMemoryBarrier
-            */
-            vkCmdPipelineBarrier(CmdBuf, 
-                SrcStageFlags, 
-                DstStageFlags, 
-                0, 
-                0, NULL, 
-                0, NULL, 
-                1, &Barrier
-            );
+            /* texture creation */
+            Aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+            SrcAccessMask = 0;
+            DstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            SrcStageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            DstStageFlags = VK_PIPELINE_STAGE_TRANSFER_BIT;
         }
+        else if (Old == VK_IMAGE_LAYOUT_UNDEFINED && New == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        {
+            /* depth/stencil */
+            Aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+            SrcAccessMask = 0;
+            DstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            SrcStageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            DstStageFlags = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+            bool32 DepthBufferHasStencil = (
+                Format == VK_FORMAT_D32_SFLOAT_S8_UINT 
+                || Format == VK_FORMAT_D24_UNORM_S8_UINT
+            );
+            if (DepthBufferHasStencil)
+            {
+                Aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+            }
+        }
+        else if (Old == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && New == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        {
+            /* texture save */
+            Aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+            SrcStageFlags = VK_ACCESS_TRANSFER_WRITE_BIT;
+            DstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            SrcAccessMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            DstStageFlags = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }
+        else
+        {
+            RUNTIME_TODO("%s", __func__);
+        }
+
+        VkImageMemoryBarrier Barrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .image = Image, 
+            .oldLayout = Old,
+            .newLayout = New,
+            .subresourceRange = {
+                .aspectMask = Aspect,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+                .baseMipLevel = 0,
+                .levelCount = MipLevel,
+            },
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .srcAccessMask = SrcAccessMask, 
+            .dstAccessMask = DstAccessMask, 
+        };
+        /* NOTE: all barriers are submitted by this function, 
+           other barriers: 
+                VkBufferMemoryBarrier
+                VkMemoryBarrier
+        */
+        vkCmdPipelineBarrier(CmdBuf, 
+            SrcStageFlags, 
+            DstStageFlags, 
+            0, 
+            0, NULL, 
+            0, NULL, 
+            1, &Barrier
+        );
     }
     Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
 }
