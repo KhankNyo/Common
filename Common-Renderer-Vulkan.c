@@ -1080,6 +1080,8 @@ internal VkFormat Vulkan_FindSupportedFormat(
     UNREACHABLE();
 }
 
+
+
 internal VkCommandBuffer Vulkan_BeginSingleTimeCommandBuffer(const vk_gpu_context *GpuContext, VkCommandPool CommandPool)
 {
     VkCommandBuffer CmdBuf;
@@ -1109,10 +1111,281 @@ internal void Vulkan_EndSingleTimeCommandBuffer(const vk_gpu_context *GpuContext
     };
     /* TODO: async transfers */
     VK_CHECK(vkQueueSubmit(GpuContext->GraphicsQueue, 1, &SubmitInfo, VK_NULL_HANDLE));
+    vkQueueWaitIdle(GpuContext->GraphicsQueue);
     /* FIXME: this is very bad performance wise, and that is an understatement */
     /* NOTE: this is locked to vsync time, DON'T DO THIS */
-    vkQueueWaitIdle(GpuContext->GraphicsQueue);
     vkFreeCommandBuffers(GpuContext->Device, CommandPool, 1, &CmdBuf);
+}
+
+internal void Vulkan_CmdTransitionImageLayout(
+    VkCommandBuffer CmdBuf,
+    VkImage Image,
+    VkFormat Format,
+    u32 MipLevel,
+    VkImageLayout Old, 
+    VkImageLayout New
+) {
+    VkAccessFlags SrcAccessMask;
+    VkAccessFlags DstAccessMask;
+    VkPipelineStageFlags SrcStageFlags;
+    VkPipelineStageFlags DstStageFlags;
+    VkImageAspectFlags Aspect;
+    if (Old == VK_IMAGE_LAYOUT_UNDEFINED && New == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+    {
+        /* texture creation */
+        Aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+        SrcAccessMask = 0;
+        DstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        SrcStageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        DstStageFlags = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    else if (Old == VK_IMAGE_LAYOUT_UNDEFINED && New == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+    {
+        /* depth/stencil */
+        Aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+        SrcAccessMask = 0;
+        DstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        SrcStageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        DstStageFlags = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        bool32 DepthBufferHasStencil = (
+            Format == VK_FORMAT_D32_SFLOAT_S8_UINT 
+            || Format == VK_FORMAT_D24_UNORM_S8_UINT
+        );
+        if (DepthBufferHasStencil)
+        {
+            Aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+        }
+    }
+    else if (Old == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && New == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+    {
+        /* texture save */
+        Aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+        SrcStageFlags = VK_ACCESS_TRANSFER_WRITE_BIT;
+        DstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        SrcAccessMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        DstStageFlags = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    }
+    else
+    {
+        RUNTIME_TODO("%s, Old: %d, New: %d", __func__, Old, New);
+    }
+
+    VkImageMemoryBarrier Barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .image = Image, 
+        .oldLayout = Old,
+        .newLayout = New,
+        .subresourceRange = {
+            .aspectMask = Aspect,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+            .baseMipLevel = 0,
+            .levelCount = MipLevel,
+        },
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .srcAccessMask = SrcAccessMask, 
+        .dstAccessMask = DstAccessMask, 
+    };
+    /* NOTE: all barriers are submitted by this function, 
+       other barriers: 
+            VkBufferMemoryBarrier
+            VkMemoryBarrier
+    */
+    vkCmdPipelineBarrier(CmdBuf, 
+        SrcStageFlags, 
+        DstStageFlags, 
+        0, 
+        0, NULL, 
+        0, NULL, 
+        1, &Barrier
+    );
+}
+
+
+/* NOTE: Image layout must be VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL */
+internal void Vulkan_CmdGenerateMipmap(
+    VkCommandBuffer CmdBuf,
+    VkImage Image, i32 TextureWidth, i32 TextureHeight, i32 MipLevels
+) {
+    {
+        VkImageLayout SourceImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        VkImageMemoryBarrier Barrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .image = Image, 
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .layerCount = 1,
+                .levelCount = 1,
+            },
+
+        };
+        /* generating mipmapping from base level (0) */
+        i32 MipWidth = TextureWidth;
+        i32 MipHeight = TextureHeight;
+        for (int i = 1; i < MipLevels; i++)
+        {
+            int SourceBaseMipLevel = i - 1;
+            int DestinationBaseMipLevel = i;
+            int DestinationMipWidth = MAXIMUM(1, MipWidth/2);
+            int DestinationMipHeight = MAXIMUM(1, MipHeight/2);
+
+            /* Transfer mip level */
+            VkImageLayout ImageLayoutForMipLevelTransition = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            {
+                /* NOTE: transferring from DST_OPTIMAL to SRC_OPTIMAL via pipeline barrier,
+                 * temporary transfer to begin mipmapping process */
+
+                Barrier.subresourceRange.baseMipLevel = SourceBaseMipLevel;
+                Barrier.oldLayout = SourceImageLayout;
+                Barrier.newLayout = ImageLayoutForMipLevelTransition;
+                Barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                Barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                vkCmdPipelineBarrier(CmdBuf, 
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, 
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, 
+                    0, 
+                    0, NULL, 
+                    0, NULL, 
+                    1, &Barrier
+                );
+
+                /* mipmap via blit image command */
+                VkImageBlit BlitRegions = {
+                    .srcOffsets = {
+                        [0] = { 0 }, 
+                        [1] = { .x = MipWidth, .y = MipHeight, .z = 1 }
+                    },
+                    .srcSubresource = {
+                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .mipLevel = SourceBaseMipLevel,
+                        .baseArrayLayer = 0,
+                        .layerCount = 1,
+                    },
+                    .dstOffsets = {
+                        [0] = { 0 },
+                        [1] = { .x = DestinationMipWidth, .y = DestinationMipHeight, .z = 1 }
+                    },
+                    .dstSubresource = {
+                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .mipLevel = DestinationBaseMipLevel,
+                        .baseArrayLayer = 0, 
+                        .layerCount = 1,
+                    },
+                };
+                /* NOTE: if using dedicated transfer queue, the queue must have graphics capabilities for vkCmdBlitImage() to work */
+                vkCmdBlitImage(CmdBuf, 
+                    /* NOTE: src same as dst is ok to transition between mip levels */
+                    Image, ImageLayoutForMipLevelTransition,
+                    Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
+                    1, 
+                    &BlitRegions,
+                    VK_FILTER_LINEAR
+                );
+            }
+
+            /* final transfer for optimal shader access */
+            {
+                Barrier.oldLayout = ImageLayoutForMipLevelTransition;
+                Barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                Barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                Barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                vkCmdPipelineBarrier(CmdBuf, 
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, 
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0, 
+                    0, NULL, 
+                    0, NULL, 
+                    1, &Barrier
+                );
+            }
+
+            MipWidth = DestinationMipWidth;
+            MipHeight = DestinationMipHeight;
+        }
+
+        /* NOTE: handle final mip level */
+        {
+            Barrier.subresourceRange.baseMipLevel = MipLevels - 1;
+            Barrier.oldLayout = SourceImageLayout;
+            Barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            Barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            Barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(CmdBuf, 
+                VK_PIPELINE_STAGE_TRANSFER_BIT, 
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 
+                0, NULL, 
+                0, NULL, 
+                1, &Barrier
+            );
+        }
+    }
+}
+
+/* NOTE: src buffer must have the same format as DstFormat */
+internal void Vulkan_CmdCopyBufferToImage(
+    VkCommandBuffer CmdBuf,
+    VkPhysicalDevice PhysicalDevice,
+    VkBuffer Src,
+    u32 SrcOffset, 
+
+    VkImage Dst,
+    u32 Width, u32 Height, 
+    int DstMipLevels,
+    VkFormat DstFormat,
+
+    bool32 GenerateMipmap
+) {
+    Vulkan_CmdTransitionImageLayout(CmdBuf, 
+        Dst, DstFormat, DstMipLevels, 
+        VK_IMAGE_LAYOUT_UNDEFINED, 
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+    );
+    VkBufferImageCopy Region = {
+        .bufferImageHeight = 0, 
+        .bufferRowLength = 0,
+        .bufferOffset = SrcOffset,
+
+        .imageOffset = { 0 },
+        .imageExtent = {
+            .width = Width,
+            .height = Height,
+            .depth = 1,
+        },
+        .imageSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseArrayLayer = 0, 
+            .mipLevel = 0,
+            .layerCount = 1,
+        },
+    };
+    vkCmdCopyBufferToImage(CmdBuf, Src, Dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &Region);
+    if (GenerateMipmap)
+    {
+        if (DstMipLevels != 1)
+        {
+            VkFormatProperties FormatProperties;
+            vkGetPhysicalDeviceFormatProperties(PhysicalDevice, DstFormat, &FormatProperties);
+            UNREACHABLE_IF(!(FormatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT), 
+                "Mipmap generation is not supported by the device"
+            );
+        }
+
+        Vulkan_CmdGenerateMipmap(CmdBuf,
+            Dst, Width, Height, DstMipLevels
+        );
+    }
+    else
+    {
+        Vulkan_CmdTransitionImageLayout(CmdBuf,
+            Dst, DstFormat, DstMipLevels,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        );
+    }
 }
 
 internal void Vulkan_TransitionImageLayout(
@@ -1121,85 +1394,10 @@ internal void Vulkan_TransitionImageLayout(
 ) {
     VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
     /* image memory barrier */
-    {
-        VkAccessFlags SrcAccessMask;
-        VkAccessFlags DstAccessMask;
-        VkPipelineStageFlags SrcStageFlags;
-        VkPipelineStageFlags DstStageFlags;
-        VkImageAspectFlags Aspect;
-        if (Old == VK_IMAGE_LAYOUT_UNDEFINED && New == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
-        {
-            /* texture creation */
-            Aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-            SrcAccessMask = 0;
-            DstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            SrcStageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-            DstStageFlags = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        }
-        else if (Old == VK_IMAGE_LAYOUT_UNDEFINED && New == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-        {
-            /* depth/stencil */
-            Aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-            SrcAccessMask = 0;
-            DstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            SrcStageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-            DstStageFlags = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-            bool32 DepthBufferHasStencil = (
-                Format == VK_FORMAT_D32_SFLOAT_S8_UINT 
-                || Format == VK_FORMAT_D24_UNORM_S8_UINT
-            );
-            if (DepthBufferHasStencil)
-            {
-                Aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
-            }
-        }
-        else if (Old == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && New == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-        {
-            /* texture save */
-            Aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-            SrcStageFlags = VK_ACCESS_TRANSFER_WRITE_BIT;
-            DstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            SrcAccessMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
-            DstStageFlags = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        }
-        else
-        {
-            RUNTIME_TODO("%s", __func__);
-        }
-
-        VkImageMemoryBarrier Barrier = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .image = Image, 
-            .oldLayout = Old,
-            .newLayout = New,
-            .subresourceRange = {
-                .aspectMask = Aspect,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-                .baseMipLevel = 0,
-                .levelCount = MipLevel,
-            },
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .srcAccessMask = SrcAccessMask, 
-            .dstAccessMask = DstAccessMask, 
-        };
-        /* NOTE: all barriers are submitted by this function, 
-           other barriers: 
-                VkBufferMemoryBarrier
-                VkMemoryBarrier
-        */
-        vkCmdPipelineBarrier(CmdBuf, 
-            SrcStageFlags, 
-            DstStageFlags, 
-            0, 
-            0, NULL, 
-            0, NULL, 
-            1, &Barrier
-        );
-    }
+    Vulkan_CmdTransitionImageLayout(CmdBuf, Image, Format, MipLevel, Old, New);
     Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
 }
+
 
 internal void Vulkan_CreateMainFramebuffers(
     VkDevice Device, 
@@ -1603,37 +1801,6 @@ internal void Vulkan_RecordCommandBuffer(
 }
 
 
-/* NOTE: src buffer must have the same format as DstFormat */
-internal void Vulkan_CopyBufferToImage(
-    const vk_gpu_context *GpuContext, VkCommandPool CommandPool, 
-    VkBuffer Src, u32 SrcOffset, 
-    VkImage Dst,
-    u32 Width, u32 Height, 
-    VkImageLayout DstLayout
-) {
-    VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
-    VkBufferImageCopy Region = {
-        .bufferImageHeight = 0, 
-        .bufferRowLength = 0,
-        .bufferOffset = SrcOffset,
-
-        .imageOffset = { 0 },
-        .imageExtent = {
-            .width = Width,
-            .height = Height,
-            .depth = 1,
-        },
-        .imageSubresource = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseArrayLayer = 0, 
-            .mipLevel = 0,
-            .layerCount = 1,
-        },
-    };
-    vkCmdCopyBufferToImage(CmdBuf, Src, Dst, DstLayout, 1, &Region);
-    Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
-}
-
 internal VkFormat Vulkan_GetVkFormat(renderer_image_format Format)
 {
     switch (Format)
@@ -1647,141 +1814,83 @@ internal VkFormat Vulkan_GetVkFormat(renderer_image_format Format)
     UNREACHABLE_IF(true, "format: %d", Format);
 }
 
-/* NOTE: Image layout must be VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL */
-internal void Vulkan_GenerateMipmap(
-    const vk_gpu_context *GpuContext, VkCommandPool CommandPool, 
-    VkFormat ImageFormat,
-    VkImage Image, i32 TextureWidth, i32 TextureHeight, i32 MipLevels
-) {
-    if (MipLevels != 1)
+internal void Vulkan_TransferResources(renderer *Vk, int CurrentFrameIndex)
+{
+    VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(&Vk->GpuContext, Vk->CommandPool);
+    Vulkan_ResourceGroup_ResizeStagingBuffer(Vk->GlobalResourceGroup, Vk->StagingBufferRequiredSize);
+    Vk->StagingBufferRequiredSize = 0;
+    isize Offset = Vk->GlobalResourceGroup->StagingBufferInfo.OffsetBytes;
+    u8 *StagingBufferPtr = Vk->GlobalResourceGroup->StagingBufferMapped;
+
+    for (vk_update_resource *i = Vk->UpdateResourceHead, *Prev = NULL; i;)
     {
-        VkFormatProperties FormatProperties;
-        vkGetPhysicalDeviceFormatProperties(GpuContext->PhysicalDevice, ImageFormat, &FormatProperties);
-        if (!(FormatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
+        bool32 ShouldRemove = false;
+        switch (i->Type)
         {
-            RUNTIME_TODO("Implement software image resizing at runtime");
-        }
-    }
-
-    VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
-    {
-        VkImageLayout SourceImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        VkImageMemoryBarrier Barrier = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .image = Image, 
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .layerCount = 1,
-                .levelCount = 1,
-            },
-
-        };
-        /* generating mipmapping from base level (0) */
-        i32 MipWidth = TextureWidth;
-        i32 MipHeight = TextureHeight;
-        for (int i = 1; i < MipLevels; i++)
+        case VULKAN_UPDATE_RESOURCE_UBO:
         {
-            int SourceBaseMipLevel = i - 1;
-            int DestinationBaseMipLevel = i;
-            int DestinationMipWidth = MAXIMUM(1, MipWidth/2);
-            int DestinationMipHeight = MAXIMUM(1, MipHeight/2);
-
-            /* Transfer mip level */
-            VkImageLayout ImageLayoutForMipLevelTransition = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            vk_update_ubo *Ubo = &i->As.UniformBuffer;
+            memcpy(Ubo->Dsts[CurrentFrameIndex], Ubo->Src, Ubo->SizeBytes);
+            Ubo->FramesUpdatedCount++;
+            ShouldRemove = (Ubo->FramesUpdatedCount == Vk->FramesInFlight);
+        } break;
+        case VULKAN_UPDATE_RESOURCE_TEXTURE:
+        {
+            vk_update_texture *TextureUpdate = &i->As.Texture;
+            vk_resource_group *ResourceGroup;
+            vk_texture *Texture;
             {
-                /* NOTE: transferring from DST_OPTIMAL to SRC_OPTIMAL via pipeline barrier,
-                 * temporary transfer to begin mipmapping process */
-
-                Barrier.subresourceRange.baseMipLevel = SourceBaseMipLevel;
-                Barrier.oldLayout = SourceImageLayout;
-                Barrier.newLayout = ImageLayoutForMipLevelTransition;
-                Barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                Barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-                vkCmdPipelineBarrier(CmdBuf, 
-                    VK_PIPELINE_STAGE_TRANSFER_BIT, 
-                    VK_PIPELINE_STAGE_TRANSFER_BIT, 
-                    0, 
-                    0, NULL, 
-                    0, NULL, 
-                    1, &Barrier
-                );
-
-                /* mipmap via blit image command */
-                VkImageBlit BlitRegions = {
-                    .srcOffsets = {
-                        [0] = { 0 }, 
-                        [1] = { .x = MipWidth, .y = MipHeight, .z = 1 }
-                    },
-                    .srcSubresource = {
-                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .mipLevel = SourceBaseMipLevel,
-                        .baseArrayLayer = 0,
-                        .layerCount = 1,
-                    },
-                    .dstOffsets = {
-                        [0] = { 0 },
-                        [1] = { .x = DestinationMipWidth, .y = DestinationMipHeight, .z = 1 }
-                    },
-                    .dstSubresource = {
-                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .mipLevel = DestinationBaseMipLevel,
-                        .baseArrayLayer = 0, 
-                        .layerCount = 1,
-                    },
-                };
-                /* NOTE: if using dedicated transfer queue, the queue must have graphics capabilities for vkCmdBlitImage() to work */
-                vkCmdBlitImage(CmdBuf, 
-                    /* NOTE: src same as dst is ok to transition between mip levels */
-                    Image, ImageLayoutForMipLevelTransition,
-                    Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
-                    1, 
-                    &BlitRegions,
-                    VK_FILTER_LINEAR
-                );
+                vk_resource_group_and_index Extract = Vulkan_ResourceGroup_ExtractHandle(TextureUpdate->Handle.Value);
+                ResourceGroup = Extract.ResourceGroup;
+                Texture = &ResourceGroup->Textures.Data[Extract.Handle];
             }
 
-            /* final transfer for optimal shader access */
+            vkm_image_info TextureImageInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, Texture->Image);
+            if (TextureUpdate->NewWidth || TextureUpdate->NewHeight)
             {
-                Barrier.oldLayout = ImageLayoutForMipLevelTransition;
-                Barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                Barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-                Barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                vkCmdPipelineBarrier(CmdBuf, 
-                    VK_PIPELINE_STAGE_TRANSFER_BIT, 
-                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                    0, 
-                    0, NULL, 
-                    0, NULL, 
-                    1, &Barrier
-                );
+                u32 Width = TextureUpdate->NewWidth? TextureUpdate->NewWidth : TextureImageInfo.Width;
+                u32 Height = TextureUpdate->NewHeight? TextureUpdate->NewHeight : TextureImageInfo.Height; 
+                Texture->Image = Vkm_ResizeImage(&ResourceGroup->GpuAllocator, Texture->Image, &(vkm_resize_image_config) {
+                    .Width = Width,
+                    .Height = Height,
+                    .MipLevels = TextureUpdate->MipLevels,
+                });
+                TextureImageInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, Texture->Image);
+                Texture->ImageView = TextureImageInfo.ImageView;
             }
 
-            MipWidth = DestinationMipWidth;
-            MipHeight = DestinationMipHeight;
-        }
+            ASSERT(Texture->ImageBuffer);
+            memcpy(StagingBufferPtr, Texture->ImageBuffer, Texture->ImageBufferSizeBytes);
+            StagingBufferPtr += Texture->ImageBufferSizeBytes;
 
-        /* NOTE: handle final mip level */
-        {
-            Barrier.subresourceRange.baseMipLevel = MipLevels - 1;
-            Barrier.oldLayout = SourceImageLayout;
-            Barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            Barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            Barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            vkCmdPipelineBarrier(CmdBuf, 
-                VK_PIPELINE_STAGE_TRANSFER_BIT, 
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0, 
-                0, NULL, 
-                0, NULL, 
-                1, &Barrier
+            Vulkan_CmdCopyBufferToImage(CmdBuf, Vulkan_GetPhysicalDevice(Vk),
+                ResourceGroup->StagingBufferInfo.Buffer, Offset,
+                TextureImageInfo.Image, TextureImageInfo.Width, TextureImageInfo.Height, TextureImageInfo.MipLevels,
+                TextureImageInfo.Format, TextureUpdate->GenerateMipmap
             );
+            Offset += Texture->ImageBufferSizeBytes;
+            Texture->State = VULKAN_TEXTURE_STATE_SHADER_READONLY;
+            ShouldRemove = true;
+        } break;
+        }
+
+        if (ShouldRemove)
+        {
+            vk_update_resource *Next = i->Next;
+            if (Prev)
+                Prev->Next = Next;
+            else Vk->UpdateResourceHead = Next;
+            SingleLink_Push(&Vk->UpdateResourceFree, i);
+            i = Next;
+        }
+        else 
+        {
+            Prev = i;
+            i = i->Next;
         }
     }
-    Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
+    Vulkan_EndSingleTimeCommandBuffer(&Vk->GpuContext, Vk->CommandPool, CmdBuf);
 }
-
 
 void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 PipelineCount)
 {
@@ -1823,88 +1932,11 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
 
     /* TODO: record command buffer and transfer in parallel */
     /* update/transfer resources */
-    for (vk_update_resource *i = Vk->UpdateResourceHead, *Prev = NULL; i;)
-    {
-        bool32 ShouldRemove = false;
-        switch (i->Type)
-        {
-        case VULKAN_UPDATE_RESOURCE_UBO:
-        {
-            vk_update_ubo *Ubo = &i->As.UniformBuffer;
-            memcpy(Ubo->Dsts[Vk->CurrentFrame], Ubo->Src, Ubo->SizeBytes);
-            Ubo->FramesUpdatedCount++;
-            ShouldRemove = (Ubo->FramesUpdatedCount == Vk->FramesInFlight);
-        } break;
-        case VULKAN_UPDATE_RESOURCE_TEXTURE:
-        {
-            vk_update_texture *TextureUpdate = &i->As.Texture;
-            vk_resource_group *ResourceGroup;
-            vk_texture *Texture;
-            {
-                vk_resource_group_and_index Extract = Vulkan_ResourceGroup_ExtractHandle(TextureUpdate->Handle.Value);
-                ResourceGroup = Extract.ResourceGroup;
-                Texture = &ResourceGroup->Textures.Data[Extract.Handle];
-            }
-
-            vkm_image_info TextureImageInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, Texture->Image);
-            {
-                isize SizeBytes = (isize)TextureImageInfo.PixelSizeBytes * TextureImageInfo.Width * TextureImageInfo.Height;
-                Vulkan_ResourceGroup_ResizeStagingBuffer(ResourceGroup, SizeBytes);
-                memcpy(ResourceGroup->StagingBufferMapped, Texture->ImageBuffer, SizeBytes);
-            }
-
-            if (Texture->State != VULKAN_TEXTURE_STATE_TRANSFER_DST)
-            {
-                Vulkan_TransitionImageLayout(
-                    GpuContext, Vk->CommandPool, 
-                    TextureImageInfo.Image, TextureImageInfo.Format,
-                    VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
-                    TextureImageInfo.MipLevels
-                );
-            }
-            Vulkan_CopyBufferToImage(GpuContext, Vk->CommandPool,
-                ResourceGroup->StagingBufferInfo.Buffer,
-                ResourceGroup->StagingBufferInfo.OffsetBytes,
-                TextureImageInfo.Image,
-                TextureImageInfo.Width, TextureImageInfo.Height,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-            );
-            Vulkan_TransitionImageLayout(
-                GpuContext, Vk->CommandPool,
-                TextureImageInfo.Image, TextureImageInfo.Format,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                TextureImageInfo.MipLevels
-            );
-            Texture->State = VULKAN_TEXTURE_STATE_SHADER_READONLY;
-
-            ShouldRemove = true;
-        } break;
-        }
-
-        if (ShouldRemove)
-        {
-            vk_update_resource *Next = i->Next;
-            if (Prev)
-                Prev->Next = Next;
-            else Vk->UpdateResourceHead = Next;
-            SingleLink_Push(&Vk->UpdateResourceFree, i);
-            i = Next;
-        }
-        else 
-        {
-            Prev = i;
-            i = i->Next;
-        }
-    }
+    Vulkan_TransferResources(Vk, Vk->CurrentFrame);
 
     /* record command buffer */
-    {
-        VK_CHECK(vkResetCommandBuffer(Vk->RenderFrame.CommandBuffers[Vk->CurrentFrame], 0));
-        Vulkan_RecordCommandBuffer(Vk, Vk->RenderFrame.CommandBuffers[Vk->CurrentFrame], ImageIndex, Pipelines, PipelineCount);
-    }
-
+    VK_CHECK(vkResetCommandBuffer(Vk->RenderFrame.CommandBuffers[Vk->CurrentFrame], 0));
+    Vulkan_RecordCommandBuffer(Vk, Vk->RenderFrame.CommandBuffers[Vk->CurrentFrame], ImageIndex, Pipelines, PipelineCount);
 
 
     VkSemaphore GraphicsQueueWait[] = { Vk->RenderFrame.GpuWaitForRenderTarget[Vk->CurrentFrame], };
@@ -2097,7 +2129,7 @@ renderer_handle Renderer_Create(const renderer_config *Config)
             .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
             .queueFamilyIndex = GpuContext->QueueFamilyIndex[QUEUE_FAMILY_TYPE_GRAPHICS],
         };
-        VK_CHECK(vkCreateCommandPool(GpuContext->Device, &CreateInfo, NULL, &CommandPool));
+        VK_CHECK(vkCreateCommandPool(Device, &CreateInfo, NULL, &CommandPool));
 
         Vk->CommandPool = CommandPool;
     }
@@ -2660,7 +2692,7 @@ internal void Vulkan_TransferDataToGpuLocalMemory(
 renderer_texture_handle Renderer_CreateStaticTexture(
     renderer *Vk,
     renderer_resource_group_handle ResourceGroupHandle,
-    const renderer_texture_config *TextureConfig,
+    const renderer_static_texture_config *TextureConfig,
     const void *ImageData
 ) {
     vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
@@ -2672,7 +2704,6 @@ renderer_texture_handle Renderer_CreateStaticTexture(
     vkm_image_info TextureImageInfo;
     {
         vk_gpu_context *GpuContext = &Vk->GpuContext;
-        VkCommandPool CommandPool = Vk->CommandPool;
         isize ImageSizeBytes = TextureConfig->Width * TextureConfig->Height * sizeof(u32);
 
         Vulkan_ResourceGroup_ResizeStagingBuffer(ResourceGroup, ImageSizeBytes);
@@ -2694,34 +2725,13 @@ renderer_texture_handle Renderer_CreateStaticTexture(
         TextureImageInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, TextureImageHandle);
 
         /* copy image data to gpu memory */
-        Vulkan_TransitionImageLayout(GpuContext, CommandPool,
-            TextureImageInfo.Image, 
-            ImageFormat, 
-            VK_IMAGE_LAYOUT_UNDEFINED, 
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
-            MipLevels
+        VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, Vk->CommandPool);
+        Vulkan_CmdCopyBufferToImage(CmdBuf, Vulkan_GetPhysicalDevice(Vk),
+            ResourceGroup->StagingBufferInfo.Buffer, ResourceGroup->StagingBufferInfo.OffsetBytes,
+            TextureImageInfo.Image, TextureImageInfo.Width, TextureImageInfo.Height, TextureImageInfo.MipLevels,
+            TextureImageInfo.Format, TextureConfig->GenerateMipmap
         );
-        Vulkan_CopyBufferToImage(GpuContext, CommandPool,
-            ResourceGroup->StagingBufferInfo.Buffer,
-            ResourceGroup->StagingBufferInfo.OffsetBytes,
-            TextureImageInfo.Image, TextureConfig->Width, TextureConfig->Height, 
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-        );
-#if 1
-        Vulkan_TransitionImageLayout(GpuContext, CommandPool,
-            TextureImageInfo.Image, 
-            ImageFormat,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 
-            MipLevels
-        );
-        /* to shut the compiler up */
-        (void)Vulkan_GenerateMipmap;
-#else
-        Vulkan_GenerateMipmap(GpuContext, CommandPool, 
-            ImageFormat, TextureImageInfo.Image, TextureConfig->Width, TextureConfig->Height, MipLevels
-        );
-#endif
+        Vulkan_EndSingleTimeCommandBuffer(GpuContext, Vk->CommandPool, CmdBuf);
     }
 
     VkSampler Sampler = Vulkan_ResourceGroup_GetSampler(Vk, TextureConfig->SamplerHandle);
@@ -2780,7 +2790,7 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
 renderer_texture_handle Renderer_CreateMutableTexture(
     renderer *Vk, 
     renderer_resource_group_handle ResourceGroupHandle,
-    const renderer_texture_config *Config,
+    const renderer_mutable_texture_config *Config,
     void **OutTextureBuffer,
     isize *OutTextureBufferSizeBytes
 ) {
@@ -2792,7 +2802,7 @@ renderer_texture_handle Renderer_CreateMutableTexture(
     );
     uint PixelSizeBytes = 4;
 
-    vk_texture_state State = VULKAN_TEXTURE_STATE_TRANSFER_DST;
+    vk_texture_state State = VULKAN_TEXTURE_STATE_UNDEFINED;
     vkm_image_handle ImageHandle;
     VkImageView ImageView;
     {
@@ -2800,7 +2810,7 @@ renderer_texture_handle Renderer_CreateMutableTexture(
         ImageHandle = Vkm_CreateImage(&ResourceGroup->GpuAllocator, &(vkm_image_config) {
             .Width = Config->Width,
             .Height = Config->Height,
-            .MipLevels = Config->MipLevels,
+            .MipLevels = MipLevels,
             .Aspect = VK_IMAGE_ASPECT_COLOR_BIT,
             .Sample = VK_SAMPLE_COUNT_1_BIT,
             .Format = ImageFormat,
@@ -2809,16 +2819,6 @@ renderer_texture_handle Renderer_CreateMutableTexture(
         });
         vkm_image_info ImageInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, ImageHandle);
         ImageView = ImageInfo.ImageView;
-
-        Vulkan_TransitionImageLayout(
-            &Vk->GpuContext, 
-            Vk->CommandPool, 
-            ImageInfo.Image, 
-            ImageFormat, 
-            VK_IMAGE_LAYOUT_UNDEFINED, 
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
-            MipLevels
-        );
     }
 
     isize ImageBufferSizeBytes = PixelSizeBytes * Config->Width * Config->Height;
@@ -2831,6 +2831,7 @@ renderer_texture_handle Renderer_CreateMutableTexture(
         .ImageView = ImageView,
         .SamplerReference = Sampler,
         .ImageBuffer = ImageBuffer,
+        .ImageBufferSizeBytes = ImageBufferSizeBytes,
     });
     renderer_texture_handle Handle = {
         .Value = Vulkan_ResourceGroup_MakeHandle(ResourceGroup, Index),
@@ -2846,11 +2847,20 @@ void Renderer_UpdateMutableTexture(
     const renderer_update_texture_config *Config
 ) {
     (void)Config;
+    vk_resource_group_and_index Extract = Vulkan_ResourceGroup_ExtractHandle(TextureHandle.Value);
+    vk_texture *Texture = &Extract.ResourceGroup->Textures.Data[Extract.Handle];
+    ASSERT(Texture->ImageBuffer, "Cannot update immutable texture");
+    Vk->StagingBufferRequiredSize += Texture->ImageBufferSizeBytes;
+
     Vulkan_PushUpdateResource(Vk,
         &(vk_update_resource) {
             .Type = VULKAN_UPDATE_RESOURCE_TEXTURE,
             .As.Texture = {
                 .Handle = TextureHandle,
+                .NewWidth = Config->NewWidth,
+                .NewHeight = Config->NewHeight,
+                .MipLevels = Config->MipLevels,
+                .GenerateMipmap = Config->GenerateMipmap,
             },
         }
     );

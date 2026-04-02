@@ -42,8 +42,9 @@ typedef_struct(vk_update_texture);
 
 typedef enum 
 {
-    VULKAN_TEXTURE_STATE_SHADER_READONLY = 0,
-    VULKAN_TEXTURE_STATE_TRANSFER_DST = 1,
+    VULKAN_TEXTURE_STATE_UNDEFINED = 0,
+    VULKAN_TEXTURE_STATE_SHADER_READONLY = 1,
+    VULKAN_TEXTURE_STATE_TRANSFER_DST = 2,
 } vk_texture_state;
 
 struct vk_texture
@@ -53,6 +54,7 @@ struct vk_texture
     VkImageView ImageView;
     VkSampler SamplerReference;
     void *ImageBuffer;
+    isize ImageBufferSizeBytes;
 };
 
 struct vk_graphics_pipeline
@@ -158,6 +160,9 @@ struct vk_update_resource
         } UniformBuffer;
         struct vk_update_texture {
             renderer_texture_handle Handle;
+            u32 NewWidth, NewHeight;
+            int MipLevels;
+            bool8 GenerateMipmap;
         } Texture;
     } As;
 };
@@ -193,6 +198,7 @@ struct renderer
                       *GlobalResourceGroup;
     vk_update_resource *UpdateResourceHead,
                        *UpdateResourceFree;
+    i64 StagingBufferRequiredSize;
 
     platform_thread_handle RecreateSwapchainAndRenderTargetThread;
     VkSurfaceFormatKHR SwapchainSurfaceFormat;

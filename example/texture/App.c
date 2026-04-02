@@ -29,14 +29,13 @@ internal void UpdateUniformBuffer(app *App)
         .TextureIndex = Renderer_GetTextureIndex(App->Renderer, App->Textures[App->SelectedTexture]),
     };
     Renderer_UpdateUniformBuffer(App->Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &UniformBuffer, sizeof UniformBuffer);
-
 }
 
 
 void App_OnInit(app *App)
 {
     const char *AppName = "Hello";
-    Platform_Set(TargetFPS, 240);
+    Platform_Set(TargetFPS, 3000);
     Platform_Set(WindowTitle, AppName);
     Platform_Set(VSyncEnable, true);
 
@@ -67,6 +66,7 @@ void App_OnLoop(app *App)
         Platform_Set(WindowTitle, Title);
     }
 
+    if (App->SelectedTexture == TEXTURE_COUNT - 1)
     {
         u32 *Ptr = App->CustomTexture;
         ASSERT(Ptr);
@@ -83,7 +83,12 @@ void App_OnLoop(app *App)
                     | Color << 0;
             }
         }
-        Renderer_UpdateMutableTexture(App->Renderer, App->Textures[TEXTURE_COUNT - 1], &(renderer_update_texture_config) { });
+        Renderer_UpdateMutableTexture(App->Renderer, 
+            App->Textures[TEXTURE_COUNT - 1], 
+            &(renderer_update_texture_config) { 
+                .GenerateMipmap = true, .MipLevels = 4 
+            }
+        );
     }
 }
 
@@ -157,7 +162,7 @@ internal renderer_texture_handle LoadTexture(
         goto Error;
     }
 
-    renderer_texture_config Config = {
+    renderer_static_texture_config Config = {
         .Format = RENDERER_IMAGE_FORMAT_RGBA,
         .Width = Width,
         .Height = Height,
@@ -186,6 +191,7 @@ internal void InitRenderer(app *App, const char *AppName)
     /* create the renderer */
     {
         renderer_config Config = {
+            .ForceTripleBuffering = true,
             .AppName = AppName,
             .FramesInFlight = 3,
         };
@@ -256,13 +262,12 @@ internal void InitRenderer(app *App, const char *AppName)
             App->Textures[i] = LoadTexture(App->Renderer, Sampler, TextureNames[i], &App->Arena);
         }
 
-#if 1
         App->CustomTextureWidth = 256;
         App->CustomTextureHeight = 256;
         App->Textures[TEXTURE_COUNT - 1] = Renderer_CreateMutableTexture(
             App->Renderer, 
             RENDERER_GLOBAL_RESOURCE_GROUP, 
-            &(renderer_texture_config) {
+            &(renderer_mutable_texture_config) {
                 .Format = RENDERER_IMAGE_FORMAT_RGBA,
                 .Width = App->CustomTextureWidth,
                 .Height = App->CustomTextureHeight,
@@ -271,7 +276,6 @@ internal void InitRenderer(app *App, const char *AppName)
             (void **)&App->CustomTexture, 
             &App->CustomTextureSizeBytes
         );
-#endif
     }
 
     /* resource binding (in shader) */
