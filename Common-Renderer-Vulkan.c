@@ -2964,26 +2964,6 @@ void Renderer_UpdateUniformBuffer(
 }
 
 
-
-
-bool32 Renderer_IsMSAASampleCountSupported(renderer_handle Vk, int SampleCount)
-{
-    switch (SampleCount)
-    {
-#define CASE(n) case n: if (Vk->Gpus.Selected.Properties.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_##n##_BIT) return true; break
-    CASE(1);
-    CASE(2);
-    CASE(4);
-    CASE(8);
-    CASE(16);
-    CASE(32);
-    CASE(64);
-#undef CASE
-    }
-    return false;
-}
-
-
 void Renderer_Destroy(renderer *Vk)
 {
     vk_gpu_context *GpuContext = &Vk->GpuContext;

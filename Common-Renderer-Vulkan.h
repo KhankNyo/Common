@@ -19,9 +19,6 @@
 
 #define QUEUE_FAMILY_INVALID_INDEX -1
 typedef i64 vk_queue_family_index;
-#define BINDING_COUNT 2
-#define BINDING_TYPE_UNIFORM_BUFFER 0
-#define BINDING_TYPE_COMBINED_IMAGE_SAMPLER 1
 
 typedef_struct(vk_gpu);
 typedef_struct(vk_gpu_list);
@@ -33,16 +30,14 @@ typedef_struct(vk_swapchain);
 typedef_struct(vk_graphics_pipeline);
 
 typedef_struct(vk_texture);
-typedef_struct(vk_frame_data);
-typedef_struct(vk_device_memory_image);
-typedef_struct(vk_swapchain_image);
 typedef_struct(vk_mesh);
-typedef_struct(vk_uniform_buffer);
 typedef_struct(vk_render_target);
 typedef_struct(vk_render_frame);
 typedef_struct(vk_resource_group);
 
 typedef_struct(vk_update_resource);
+typedef_struct(vk_update_ubo);
+typedef_struct(vk_update_texture);
 
 
 typedef enum 
@@ -148,8 +143,6 @@ typedef enum
     VULKAN_UPDATE_RESOURCE_UBO = 1,
     VULKAN_UPDATE_RESOURCE_TEXTURE = 2,
 } vk_update_resource_type;
-typedef_struct(vk_update_ubo);
-typedef_struct(vk_update_texture);
 
 struct vk_update_resource
 {

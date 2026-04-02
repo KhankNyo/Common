@@ -23,18 +23,27 @@ packed(struct vertex_buffer
 });
 
 internal void InitRenderer(app *App, const char *AppName);
+internal void UpdateUniformBuffer(app *App)
+{
+    uniform_buffer UniformBuffer = {
+        .TextureIndex = Renderer_GetTextureIndex(App->Renderer, App->Textures[App->SelectedTexture]),
+    };
+    Renderer_UpdateUniformBuffer(App->Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &UniformBuffer, sizeof UniformBuffer);
+
+}
 
 
 void App_OnInit(app *App)
 {
     const char *AppName = "Hello";
-    Platform_Set(TargetFPS, 120);
+    Platform_Set(TargetFPS, 240);
     Platform_Set(WindowTitle, AppName);
     Platform_Set(VSyncEnable, true);
 
     *App = (app) { 0 };
     Arena_Create(&App->Arena, Platform_Get(Allocator), 16*MB, 16);
     InitRenderer(App, AppName);
+    UpdateUniformBuffer(App);
 }
 
 void App_OnDeinit(app *App)
@@ -56,13 +65,6 @@ void App_OnLoop(app *App)
             App->SelectedTexture
         );
         Platform_Set(WindowTitle, Title);
-    }
-
-    {
-        uniform_buffer UniformBuffer = {
-            .TextureIndex = Renderer_GetTextureIndex(App->Renderer, App->Textures[App->SelectedTexture]),
-        };
-        Renderer_UpdateUniformBuffer(App->Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &UniformBuffer, sizeof UniformBuffer);
     }
 
     {
@@ -110,6 +112,7 @@ void App_OnEvent(app *App, platform_event Event)
         if (IN_RANGE('0', Key.Type, '0' + TEXTURE_COUNT - 1))
         {
             App->SelectedTexture = Key.Type - '0';
+            UpdateUniformBuffer(App);
         }
     } break;
     case PLATFORM_EVENT_MOUSE:
