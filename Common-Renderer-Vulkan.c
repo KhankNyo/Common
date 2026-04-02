@@ -2250,7 +2250,8 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
                 )
             );
             ASSERT(BufferInfo.CapacityBytes <= Vk->Gpus.Selected.Properties.limits.maxUniformBufferRange, 
-                "UNIFORM BUFFER TOO BIG, rounded: %ld, provided: %ld, max allowed by device: %d", BufferInfo.CapacityBytes, UniformBufferSizeBytes, Vk->Gpus.Selected.Properties.limits.maxUniformBufferRange
+                "UNIFORM BUFFER TOO BIG, rounded: %ld, provided: %ld, max allowed by device: %d", 
+                BufferInfo.CapacityBytes, UniformBufferSizeBytes, Vk->Gpus.Selected.Properties.limits.maxUniformBufferRange
             );
             ResourceGroup->UniformBuffersMapped[i] = Vkm_MapBufferMemory(
                 &ResourceGroup->GpuAllocator, 
@@ -2712,7 +2713,7 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
     return (renderer_mesh_handle) { (u64)MeshPtr };
 }
 
-renderer_texture_handle Renderer_CreateTexture(
+renderer_texture_handle Renderer_CreateMutableTexture(
     renderer *Vk, 
     renderer_resource_group_handle ResourceGroupHandle,
     const renderer_texture_config *Config
