@@ -47,8 +47,8 @@ typedef_struct(vk_update_resource);
 
 typedef enum 
 {
-    VULKAN_TEXTURE_STATE_SHADER_READONLY,
-    VULKAN_TEXTURE_STATE_TRANSFER_DST,
+    VULKAN_TEXTURE_STATE_SHADER_READONLY = 0,
+    VULKAN_TEXTURE_STATE_TRANSFER_DST = 1,
 } vk_texture_state;
 
 struct vk_texture
@@ -57,6 +57,7 @@ struct vk_texture
     vkm_image_handle Image;
     VkImageView ImageView;
     VkSampler SamplerReference;
+    void *ImageBuffer;
 };
 
 struct vk_graphics_pipeline
@@ -142,12 +143,30 @@ struct vk_resource_group
     VkDescriptorSet *DescriptorSets;
 };
 
+typedef enum 
+{
+    VULKAN_UPDATE_RESOURCE_UBO = 1,
+    VULKAN_UPDATE_RESOURCE_TEXTURE = 2,
+} vk_update_resource_type;
+typedef_struct(vk_update_ubo);
+typedef_struct(vk_update_texture);
+
 struct vk_update_resource
 {
     single_link(vk_update_resource);
-    void **UniformBuffersDst;
-    void *UniformBufferSrc;
-    isize UniformBufferSizeBytes;
+    vk_update_resource_type Type;
+
+    union {
+        struct vk_update_ubo {
+            void **Dsts;
+            void *Src;
+            isize SizeBytes;
+            int FramesUpdatedCount;
+        } UniformBuffer;
+        struct vk_update_texture {
+            renderer_texture_handle Handle;
+        } Texture;
+    } As;
 };
 
 
@@ -175,7 +194,6 @@ struct renderer
         profiler *Profiler;
     } GpuContext;
     bool8 IsResized;
-    bool8 ForceTripleBuffering;
 
     vk_resource_group *ResourceGroupHead, 
                       *ResourceGroupFreeSlots, 
@@ -184,6 +202,8 @@ struct renderer
                        *UpdateResourceFree;
 
     platform_thread_handle RecreateSwapchainAndRenderTargetThread;
+    VkSurfaceFormatKHR SwapchainSurfaceFormat;
+    VkPresentModeKHR SwapchainPresentMode;
     struct vk_swapchain { 
         VkSwapchainKHR Handle;
         int Width;

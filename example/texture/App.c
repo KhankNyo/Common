@@ -28,7 +28,7 @@ internal void InitRenderer(app *App, const char *AppName);
 void App_OnInit(app *App)
 {
     const char *AppName = "Hello";
-    Platform_Set(TargetFPS, 60);
+    Platform_Set(TargetFPS, 120);
     Platform_Set(WindowTitle, AppName);
     Platform_Set(VSyncEnable, true);
 
@@ -45,6 +45,7 @@ void App_OnDeinit(app *App)
 
 void App_OnLoop(app *App)
 {
+
     /* title */
     {
         double FrameTime = Platform_Get(FrameTime);
@@ -62,6 +63,25 @@ void App_OnLoop(app *App)
             .TextureIndex = Renderer_GetTextureIndex(App->Renderer, App->Textures[App->SelectedTexture]),
         };
         Renderer_UpdateUniformBuffer(App->Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &UniformBuffer, sizeof UniformBuffer);
+    }
+
+    {
+        u32 *Ptr = App->CustomTexture;
+        ASSERT(Ptr);
+        float Pi = 3.14159;
+        float ElapsedTime = Platform_Get(ElapsedTime);
+        u32 Color = (sinf(ElapsedTime * 2*Pi) + 1.0f) * 0.5f * 255.0f;
+        for (int y = 0; y < App->CustomTextureHeight; y++)
+        {
+            for (int x = 0; x < App->CustomTextureWidth; x++)
+            {
+                *Ptr++ = 0xFF000000
+                    | (Color) << 16
+                    | (Color) << 8 
+                    | Color << 0;
+            }
+        }
+        Renderer_UpdateMutableTexture(App->Renderer, App->Textures[TEXTURE_COUNT - 1], &(renderer_update_texture_config) { });
     }
 }
 
@@ -220,18 +240,38 @@ internal void InitRenderer(app *App, const char *AppName)
         const char *TextureNames[] = {
             "assets/gradient.bmp",
         };
+
+        STATIC_ASSERT(STATIC_ARRAY_SIZE(TextureNames) <= TEXTURE_COUNT - 1, "Too many textures");
         renderer_sampler_config SamplerConfig = {
             .MagFilter = RENDERER_FILTER_LINEAR,
             .MinFilter = RENDERER_FILTER_LINEAR,
             .EnableAnisotropyFiltering = false,
         };
         renderer_sampler_handle Sampler = Renderer_CreateSampler(App->Renderer, RENDERER_GLOBAL_RESOURCE_GROUP, &SamplerConfig);
-        for (uint i = 0; i < STATIC_ARRAY_SIZE(TextureNames); i++)
+        for (int i = 0; i < (int)STATIC_ARRAY_SIZE(TextureNames); i++)
         {
             App->Textures[i] = LoadTexture(App->Renderer, Sampler, TextureNames[i], &App->Arena);
         }
+
+#if 1
+        App->CustomTextureWidth = 256;
+        App->CustomTextureHeight = 256;
+        App->Textures[TEXTURE_COUNT - 1] = Renderer_CreateMutableTexture(
+            App->Renderer, 
+            RENDERER_GLOBAL_RESOURCE_GROUP, 
+            &(renderer_texture_config) {
+                .Format = RENDERER_IMAGE_FORMAT_RGBA,
+                .Width = App->CustomTextureWidth,
+                .Height = App->CustomTextureHeight,
+                .SamplerHandle = Sampler,
+            }, 
+            (void **)&App->CustomTexture, 
+            &App->CustomTextureSizeBytes
+        );
+#endif
     }
 
+    /* resource binding (in shader) */
     {
         renderer_resource_binding_config Config = {
             .UniformBufferBinding = 0,

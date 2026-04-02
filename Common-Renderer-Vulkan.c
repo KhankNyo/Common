@@ -124,6 +124,46 @@ internal vk_graphics_pipeline *Vulkan_ResourceGroup_GetGraphicsPipeline(renderer
     return &Result.ResourceGroup->GraphicsPipelines.Data[Result.Handle];
 }
 
+internal void Vulkan_ResourceGroup_ResizeStagingBuffer(vk_resource_group *ResourceGroup, isize SizeBytes)
+{
+    if (SizeBytes > ResourceGroup->StagingBufferInfo.CapacityBytes)
+    {
+        if (ResourceGroup->StagingBufferInfo.CapacityBytes == 0)
+        {
+            ResourceGroup->StagingBuffer = Vkm_CreateBuffer(
+                &ResourceGroup->GpuAllocator, 
+                &(vkm_buffer_config) {
+                    .BufferType = VKM_BUFFER_TYPE_STAGING,
+                    .MemoryCapacityBytes = SizeBytes,
+                }
+            );
+        }
+        else
+        {
+            Vkm_UnmapBufferMemory(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer, ResourceGroup->StagingBufferMapped);
+            ResourceGroup->StagingBuffer = Vkm_ResizeBuffer(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer, SizeBytes);
+        }
+        ResourceGroup->StagingBufferInfo = Vkm_GetBufferInfo(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer);
+        ResourceGroup->StagingBufferMapped = Vkm_MapBufferMemory(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer);
+    }
+}
+
+internal void Vulkan_PushUpdateResource(renderer *Vk, const vk_update_resource *Update)
+{
+    vk_update_resource *Node = NULL;
+    if (Vk->UpdateResourceFree)
+    {
+        SingleLink_Pop(&Vk->UpdateResourceFree, &Node);
+    }
+    else
+    {
+        Node = Arena_AllocNonZero(&Vk->Arena, sizeof *Node);
+    }
+
+    *Node = *Update;
+    SingleLink_Push(&Vk->UpdateResourceHead, Node);
+}
+
 
 
 internal VkBool32 Vulkan_DebugCallback(
@@ -605,81 +645,27 @@ internal vk_swapchain Vulkan_CreateSwapchain(
     profiler *Profiler,
     const vk_gpu_context *GpuContext, 
     int Width, int Height,
-    bool32 ForceTripleBuffering,
+    VkPresentModeKHR PresentMode,
+    VkSurfaceFormatKHR SurfaceFormat,
     VkSurfaceKHR WindowSurface,
-    VkSwapchainKHR OldSwapchainHandle,
-    arena_alloc TmpArena
+    VkSwapchainKHR OldSwapchainHandle
 ) {
     VkDevice Device = GpuContext->Device;
-    VkPhysicalDevice PhysicalDevice = GpuContext->PhysicalDevice;
 
     VkSwapchainKHR SwapchainHandle = NULL;
-    VkPresentModeKHR PresentMode = VK_PRESENT_MODE_FIFO_KHR; /* FIFO is guaranteed by the Vulkan spec */
-    VkSurfaceFormatKHR SelectedFormat = { 0 };
     VkExtent2D Extent = { 0 };
-    Arena_Scope(&TmpArena)
     {
-        vk_swapchain_support_config Config = { 0 };
-        Profiler_Scope(Profiler, "Vulkan_QuerySwapchainSupportConfig()")
+        VkSurfaceCapabilitiesKHR Capabilities;
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(GpuContext->PhysicalDevice, WindowSurface, &Capabilities);
+
+        /* choose extent, resolution of swapchain image */
+        Extent = Capabilities.currentExtent;
+        if (Capabilities.currentExtent.width == UINT32_MAX)
         {
-            Config = Vulkan_QuerySwapchainSupportConfig(
-                PhysicalDevice, WindowSurface, &TmpArena
-            );
-        }
-        VkSurfaceCapabilitiesKHR *Cap = &Config.Capabilities;
-
-        /* NOTE: choose surface format */
-        Profiler_Scope(Profiler, "CreateSwapchain -- choosing config")
-        {
-            {
-                VkSurfaceFormatKHR *Found = NULL;
-                DynamicArray_Foreach(&Config.Formats, i)
-                {
-                    if (i->format == VK_FORMAT_B8G8R8A8_SRGB 
-                    && i->colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR)
-                    {
-                        Found = i;
-                        break;
-                    }
-                }
-                if (Found)
-                {
-                    SelectedFormat = *Found;
-                }
-                else
-                {
-                    ASSERT(Config.Formats.Count > 0, "No surface format to choose from");
-                    SelectedFormat = Config.Formats.Data[0];
-                }
-            }
-
-            /* NOTE: choose present mode */
-            if (ForceTripleBuffering)
-            {
-                PresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-            }
-            else
-            {
-                DynamicArray_Foreach(&Config.PresentModes, i)
-                {
-                    /* triple buffering my beloved */
-                    if (*i == VK_PRESENT_MODE_MAILBOX_KHR)
-                    {
-                        PresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-                        break;
-                    }
-                }
-            }
-
-            /* NOTE: choose extent, resolution of swapchain image */
-            Extent = Config.Capabilities.currentExtent;
-            if (Config.Capabilities.currentExtent.width == UINT32_MAX)
-            {
-                Extent = (VkExtent2D) {
-                    .width = CLAMP(Cap->minImageExtent.width, (u32)Width, Cap->maxImageExtent.width),
-                    .height = CLAMP(Cap->minImageExtent.height, (u32)Height, Cap->maxImageExtent.height),
-                };
-            }
+            Extent = (VkExtent2D) {
+                .width = CLAMP(Capabilities.minImageExtent.width, (u32)Width, Capabilities.maxImageExtent.width),
+                .height = CLAMP(Capabilities.minImageExtent.height, (u32)Height, Capabilities.maxImageExtent.height),
+            };
         }
 
         /* NOTE: create the swapchain */
@@ -687,10 +673,10 @@ internal vk_swapchain Vulkan_CreateSwapchain(
             VkSwapchainCreateInfoKHR CreateInfo;
             Profiler_Scope(Profiler, "vkCreateSwapchainKHR() -- parameters")
             {
-                u32 ImageCount = Cap->minImageCount + 1;
-                if (Cap->maxImageCount > 0 && ImageCount > Cap->maxImageCount)
-                    ImageCount = Cap->maxImageCount;
-                if (IN_RANGE(Cap->minImageCount, 3, Cap->maxImageCount))
+                u32 ImageCount = Capabilities.minImageCount + 1;
+                if (Capabilities.maxImageCount > 0 && ImageCount > Capabilities.maxImageCount)
+                    ImageCount = Capabilities.maxImageCount;
+                if (IN_RANGE(Capabilities.minImageCount, 3, Capabilities.maxImageCount))
                     ImageCount = 3;
 
                 CreateInfo = (VkSwapchainCreateInfoKHR) {
@@ -698,11 +684,11 @@ internal vk_swapchain Vulkan_CreateSwapchain(
                     .surface = WindowSurface,
                     .minImageCount = ImageCount, 
                     .imageExtent = Extent, 
-                    .imageColorSpace = SelectedFormat.colorSpace, 
-                    .imageFormat = SelectedFormat.format,
+                    .imageColorSpace = SurfaceFormat.colorSpace, 
+                    .imageFormat = SurfaceFormat.format,
                     .imageArrayLayers = 1,
                     .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, /* directly rendering into the swapchain */
-                    .preTransform = Cap->currentTransform, /* no transform */
+                    .preTransform = Capabilities.currentTransform, /* no transform */
                     .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, /* no alpha blend with external windows */
                     .presentMode = PresentMode,
                     .clipped = VK_TRUE,
@@ -740,7 +726,7 @@ internal vk_swapchain Vulkan_CreateSwapchain(
 
     vk_swapchain Swapchain = (vk_swapchain) {
         .Handle = SwapchainHandle,
-        .ImageFormat = SelectedFormat.format, 
+        .ImageFormat = SurfaceFormat.format, 
         .Width = Extent.width,
         .Height = Extent.height,
         .PresentMode = PresentMode,
@@ -755,7 +741,7 @@ internal VkShaderModule Vulkan_CreateShaderModule(
     VkShaderModuleCreateInfo CreateInfo = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = CodeSize,
-        .pCode = (u32 *)ShaderCode,
+        .pCode = (const u32 *)ShaderCode,
     };
     VK_CHECK(vkCreateShaderModule(Device, &CreateInfo, NULL, &Module));
     return Module;
@@ -1069,20 +1055,6 @@ internal VkRenderPass Vulkan_CreateRenderPass(VkDevice Device,
     return RenderPass;
 }
 
-internal VkCommandPool Vulkan_CreateCommandPool(const vk_gpu_context *GpuContext) 
-{
-    VkCommandPool CommandPool = VK_NULL_HANDLE;
-    {
-        VkCommandPoolCreateInfo CreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, 
-            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-            .queueFamilyIndex = GpuContext->QueueFamilyIndex[QUEUE_FAMILY_TYPE_GRAPHICS],
-        };
-        VK_CHECK(vkCreateCommandPool(GpuContext->Device, &CreateInfo, NULL, &CommandPool));
-    }
-    return CommandPool;
-}
-
 internal VkFormat Vulkan_FindSupportedFormat(
     VkPhysicalDevice Gpu,
     const VkFormat *DesiredFormatList, isize DesiredFormatCount, 
@@ -1189,15 +1161,6 @@ internal void Vulkan_TransitionImageLayout(
             DstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             SrcAccessMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
             DstStageFlags = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        }
-        else if (Old == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && New == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
-        {
-            /* make texture transferable */
-            Aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-            SrcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            DstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            SrcStageFlags = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            DstAccessMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
         }
         else
         {
@@ -1504,10 +1467,10 @@ internal void Vulkan_RecreateSwapchainAndRenderTargetThread(void *UserData)
                     Vk->Profiler, 
                     GpuContext, 
                     Width, Height, 
-                    Vk->ForceTripleBuffering, 
+                    Vk->SwapchainPresentMode,
+                    Vk->SwapchainSurfaceFormat,
                     Vk->WindowSurface, 
-                    Vk->Swapchain.Handle,
-                    Vk->Arena
+                    Vk->Swapchain.Handle
                 );
             }
             Profiler_Scope(Vk->Profiler, "Vulkan_DestroySwapchain()")
@@ -1859,28 +1822,89 @@ void Renderer_Draw(renderer *Vk, const renderer_draw_pipeline *Pipelines, i32 Pi
     }
 
     /* TODO: record command buffer and transfer in parallel */
+    /* update/transfer resources */
+    for (vk_update_resource *i = Vk->UpdateResourceHead, *Prev = NULL; i;)
+    {
+        bool32 ShouldRemove = false;
+        switch (i->Type)
+        {
+        case VULKAN_UPDATE_RESOURCE_UBO:
+        {
+            vk_update_ubo *Ubo = &i->As.UniformBuffer;
+            memcpy(Ubo->Dsts[Vk->CurrentFrame], Ubo->Src, Ubo->SizeBytes);
+            Ubo->FramesUpdatedCount++;
+            ShouldRemove = (Ubo->FramesUpdatedCount == Vk->FramesInFlight);
+        } break;
+        case VULKAN_UPDATE_RESOURCE_TEXTURE:
+        {
+            vk_update_texture *TextureUpdate = &i->As.Texture;
+            vk_resource_group *ResourceGroup;
+            vk_texture *Texture;
+            {
+                vk_resource_group_and_index Extract = Vulkan_ResourceGroup_ExtractHandle(TextureUpdate->Handle.Value);
+                ResourceGroup = Extract.ResourceGroup;
+                Texture = &ResourceGroup->Textures.Data[Extract.Handle];
+            }
+
+            vkm_image_info TextureImageInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, Texture->Image);
+            {
+                isize SizeBytes = (isize)TextureImageInfo.PixelSizeBytes * TextureImageInfo.Width * TextureImageInfo.Height;
+                Vulkan_ResourceGroup_ResizeStagingBuffer(ResourceGroup, SizeBytes);
+                memcpy(ResourceGroup->StagingBufferMapped, Texture->ImageBuffer, SizeBytes);
+            }
+
+            if (Texture->State != VULKAN_TEXTURE_STATE_TRANSFER_DST)
+            {
+                Vulkan_TransitionImageLayout(
+                    GpuContext, Vk->CommandPool, 
+                    TextureImageInfo.Image, TextureImageInfo.Format,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
+                    TextureImageInfo.MipLevels
+                );
+            }
+            Vulkan_CopyBufferToImage(GpuContext, Vk->CommandPool,
+                ResourceGroup->StagingBufferInfo.Buffer,
+                ResourceGroup->StagingBufferInfo.OffsetBytes,
+                TextureImageInfo.Image,
+                TextureImageInfo.Width, TextureImageInfo.Height,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+            );
+            Vulkan_TransitionImageLayout(
+                GpuContext, Vk->CommandPool,
+                TextureImageInfo.Image, TextureImageInfo.Format,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                TextureImageInfo.MipLevels
+            );
+            Texture->State = VULKAN_TEXTURE_STATE_SHADER_READONLY;
+
+            ShouldRemove = true;
+        } break;
+        }
+
+        if (ShouldRemove)
+        {
+            vk_update_resource *Next = i->Next;
+            if (Prev)
+                Prev->Next = Next;
+            else Vk->UpdateResourceHead = Next;
+            SingleLink_Push(&Vk->UpdateResourceFree, i);
+            i = Next;
+        }
+        else 
+        {
+            Prev = i;
+            i = i->Next;
+        }
+    }
+
     /* record command buffer */
     {
         VK_CHECK(vkResetCommandBuffer(Vk->RenderFrame.CommandBuffers[Vk->CurrentFrame], 0));
         Vulkan_RecordCommandBuffer(Vk, Vk->RenderFrame.CommandBuffers[Vk->CurrentFrame], ImageIndex, Pipelines, PipelineCount);
     }
 
-    /* update resources */
-    {
-        vk_update_resource *Last = Vk->UpdateResourceHead;
-        LinkedList_Foreach(Vk->UpdateResourceHead, i)
-        {
-            memcpy(i->UniformBuffersDst[Vk->CurrentFrame], i->UniformBufferSrc, i->UniformBufferSizeBytes);
-            Last = i;
-        }
-
-        if (Last)
-        {
-            Last->Next = Vk->UpdateResourceFree;
-            Vk->UpdateResourceFree = Vk->UpdateResourceHead;
-            Vk->UpdateResourceHead = NULL;
-        }
-    }
 
 
     VkSemaphore GraphicsQueueWait[] = { Vk->RenderFrame.GpuWaitForRenderTarget[Vk->CurrentFrame], };
@@ -1958,7 +1982,6 @@ renderer_handle Renderer_Create(const renderer_config *Config)
             .Arena = TmpArena,
             .Profiler = Config->Profiler,
             .FramesInFlight = Config->FramesInFlight,
-            .ForceTripleBuffering = Config->ForceTripleBuffering,
         };
         Arena = &Vk->Arena;
     }
@@ -2006,18 +2029,79 @@ renderer_handle Renderer_Create(const renderer_config *Config)
         GpuContext->Profiler = Config->Profiler;
     }
 
-    /* NOTE: command pool must be created before attempting to load resources onto the gpu */
-    Vk->CommandPool = Vulkan_CreateCommandPool(GpuContext);
 
-    platform_framebuffer_dimensions FramebufferDimensions = Platform_Get(FramebufferDimensions);
-    Vk->Swapchain = Vulkan_CreateSwapchain(
-        Vk->Profiler, GpuContext, 
-        FramebufferDimensions.Width, FramebufferDimensions.Height, 
-        Vk->ForceTripleBuffering,
-        Vk->WindowSurface, 
-        VK_NULL_HANDLE, 
-        Vk->Arena
-    );
+    /* swapchain present mode and format */
+    Arena_Scope(Arena)
+    {
+        VkSurfaceFormatKHR SurfaceFormat = { 0 };
+        {
+            u32 FormatCount;
+            VkSurfaceFormatKHR *Formats;
+            vkGetPhysicalDeviceSurfaceFormatsKHR(GpuContext->PhysicalDevice, Vk->WindowSurface, &FormatCount, NULL);
+            ASSERT(FormatCount);
+            Arena_AllocArray(Arena, &Formats, FormatCount);
+            vkGetPhysicalDeviceSurfaceFormatsKHR(GpuContext->PhysicalDevice, Vk->WindowSurface, &FormatCount, Formats);
+
+            VkSurfaceFormatKHR *Found = &Formats[0];
+            for (uint i = 0; i < FormatCount; i++)
+            {
+                if (Formats[i].format == VK_FORMAT_B8G8R8A8_SRGB && Formats[i].colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR)
+                {
+                    Found = &Formats[i];
+                    break;
+                }
+            }
+            SurfaceFormat = *Found;
+        }
+
+        VkPresentModeKHR PresentMode = VK_PRESENT_MODE_FIFO_KHR;
+        {
+            u32 PresentModeCount;
+            VkPresentModeKHR *PresentModes;
+            vkGetPhysicalDeviceSurfacePresentModesKHR(GpuContext->PhysicalDevice, Vk->WindowSurface, &PresentModeCount, NULL);
+            ASSERT(PresentModeCount);
+            Arena_AllocArray(Arena, &PresentModes, PresentModeCount);
+            vkGetPhysicalDeviceSurfacePresentModesKHR(GpuContext->PhysicalDevice, Vk->WindowSurface, &PresentModeCount, PresentModes);
+
+            for (uint i = 0; i < PresentModeCount; i++)
+            {
+                if (PresentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+                {
+                    PresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+                    break;
+                }
+            }
+            if (Config->ForceTripleBuffering)
+                PresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+        }
+
+        platform_framebuffer_dimensions FramebufferDimensions = Platform_Get(FramebufferDimensions);
+        Vk->SwapchainPresentMode = PresentMode;
+        Vk->SwapchainSurfaceFormat = SurfaceFormat;
+        Vk->Swapchain = Vulkan_CreateSwapchain(
+            Vk->Profiler, GpuContext, 
+            FramebufferDimensions.Width, FramebufferDimensions.Height, 
+            Vk->SwapchainPresentMode,
+            Vk->SwapchainSurfaceFormat,
+            Vk->WindowSurface, 
+            VK_NULL_HANDLE
+        );
+    }
+
+
+    /* NOTE: command pool must be created before attempting to load resources onto the gpu */
+    {
+        VkCommandPool CommandPool;
+        VkCommandPoolCreateInfo CreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, 
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = GpuContext->QueueFamilyIndex[QUEUE_FAMILY_TYPE_GRAPHICS],
+        };
+        VK_CHECK(vkCreateCommandPool(GpuContext->Device, &CreateInfo, NULL, &CommandPool));
+
+        Vk->CommandPool = CommandPool;
+    }
+
 
     /* default/global resource group */
     {
@@ -2154,30 +2238,6 @@ internal u32 Vulkan_ResourceGroup_PushGraphicsPipeline(vk_resource_group *Resour
     DynamicArray_Push(&ResourceGroup->CpuAllocator, &ResourceGroup->GraphicsPipelines, *GraphicsPipeline);
     u32 Index = ResourceGroup->GraphicsPipelines.Count - 1;
     return Index;
-}
-
-internal void Vulkan_ResourceGroup_ResizeStagingBuffer(vk_resource_group *ResourceGroup, isize SizeBytes)
-{
-    if (SizeBytes > ResourceGroup->StagingBufferInfo.CapacityBytes)
-    {
-        if (ResourceGroup->StagingBufferInfo.CapacityBytes == 0)
-        {
-            ResourceGroup->StagingBuffer = Vkm_CreateBuffer(
-                &ResourceGroup->GpuAllocator, 
-                &(vkm_buffer_config) {
-                    .BufferType = VKM_BUFFER_TYPE_STAGING,
-                    .MemoryCapacityBytes = SizeBytes,
-                }
-            );
-        }
-        else
-        {
-            Vkm_UnmapBufferMemory(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer, ResourceGroup->StagingBufferMapped);
-            ResourceGroup->StagingBuffer = Vkm_ResizeBuffer(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer, SizeBytes);
-        }
-        ResourceGroup->StagingBufferInfo = Vkm_GetBufferInfo(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer);
-        ResourceGroup->StagingBufferMapped = Vkm_MapBufferMemory(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer);
-    }
 }
 
 internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *ResourceGroup, const renderer_resource_group_config *Config)
@@ -2383,7 +2443,11 @@ renderer_resource_binding Renderer_BindResourceGroup(
                     .binding = Config->TextureArrayBinding,
                     .descriptorCount = ResourceGroup->Textures.Count,
                     .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                    /* NOTE: 
+                     *  if texture needed to be accessed earlier than fragment shader bit, 
+                     *  change the DstStageFlags in Vulkan_TransitionImageLayout()
+                     *  so that image layout transition is finished before fragment shader stage */
+                    .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, 
                 },
             };
             VkDescriptorSetLayoutCreateInfo CreateInfo = {
@@ -2716,11 +2780,17 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
 renderer_texture_handle Renderer_CreateMutableTexture(
     renderer *Vk, 
     renderer_resource_group_handle ResourceGroupHandle,
-    const renderer_texture_config *Config
+    const renderer_texture_config *Config,
+    void **OutTextureBuffer,
+    isize *OutTextureBufferSizeBytes
 ) {
     vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
     int MipLevels = Config->MipLevels == 0? 1 : Config->MipLevels;
-    VkDevice Device = Vulkan_GetDevice(Vk);
+    ASSERT(Config->Format == RENDERER_IMAGE_FORMAT_RGBA 
+        || Config->Format == RENDERER_IMAGE_FORMAT_BGRA, 
+        "Unsupported image format for mutable texture"
+    );
+    uint PixelSizeBytes = 4;
 
     vk_texture_state State = VULKAN_TEXTURE_STATE_TRANSFER_DST;
     vkm_image_handle ImageHandle;
@@ -2751,8 +2821,8 @@ renderer_texture_handle Renderer_CreateMutableTexture(
         );
     }
 
-    /* TODO: allocate mem for intermediate buffer */
-    TODO("Allocate memory");
+    isize ImageBufferSizeBytes = PixelSizeBytes * Config->Width * Config->Height;
+    void *ImageBuffer = Arena_Alloc(&ResourceGroup->CpuArena, ImageBufferSizeBytes);
 
     VkSampler Sampler = Vulkan_ResourceGroup_GetSampler(Vk, Config->SamplerHandle);
     u32 Index = Vulkan_ResourceGroup_PushTexture(ResourceGroup, &(vk_texture) {
@@ -2760,21 +2830,42 @@ renderer_texture_handle Renderer_CreateMutableTexture(
         .Image = ImageHandle,
         .ImageView = ImageView,
         .SamplerReference = Sampler,
+        .ImageBuffer = ImageBuffer,
     });
     renderer_texture_handle Handle = {
         .Value = Vulkan_ResourceGroup_MakeHandle(ResourceGroup, Index),
     };
+    *OutTextureBuffer = ImageBuffer;
+    *OutTextureBufferSizeBytes = ImageBufferSizeBytes;
     return Handle;
+}
+
+void Renderer_UpdateMutableTexture(
+    renderer *Vk, 
+    renderer_texture_handle TextureHandle,
+    const renderer_update_texture_config *Config
+) {
+    (void)Config;
+    Vulkan_PushUpdateResource(Vk,
+        &(vk_update_resource) {
+            .Type = VULKAN_UPDATE_RESOURCE_TEXTURE,
+            .As.Texture = {
+                .Handle = TextureHandle,
+            },
+        }
+    );
 }
 
 renderer_mesh_handle Renderer_CreateMutableMesh(
     renderer *Vk, 
     renderer_resource_group_handle ResourceGroupHandle,
-    const renderer_mesh_config *Config
+    const renderer_mesh_config *Config,
+    void **OutVertexBuffer,
+    u32 **OutIndexBuffer
 ) {
     vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
 
-    TODO("Renderer_CreateMutableMesh()");
+    //TODO("Renderer_CreateMutableMesh()");
 }
 
 
@@ -2860,24 +2951,16 @@ void Renderer_UpdateUniformBuffer(
     memcpy(ResourceGroup->UniformBufferTmp, Data, SizeBytes);
 
     /* push uniform to be updated */
-    {
-        vk_update_resource *Node;
-        if (Vk->UpdateResourceFree)
-        {
-            SingleLink_Pop(&Vk->UpdateResourceFree, &Node);
+    Vulkan_PushUpdateResource(Vk, 
+        &(vk_update_resource) {
+            .Type = VULKAN_UPDATE_RESOURCE_UBO,
+            .As.UniformBuffer = {
+                .Dsts = ResourceGroup->UniformBuffersMapped,
+                .Src = ResourceGroup->UniformBufferTmp,
+                .SizeBytes = SizeBytes,
+            },
         }
-        else
-        {
-            Node = Arena_Alloc(&Vk->Arena, sizeof *Node);
-        }
-
-        *Node = (vk_update_resource) {
-            .UniformBuffersDst = ResourceGroup->UniformBuffersMapped,
-            .UniformBufferSrc = ResourceGroup->UniformBufferTmp,
-            .UniformBufferSizeBytes = SizeBytes,
-        };
-        SingleLink_Push(&Vk->UpdateResourceHead, Node);
-    }
+    );
 }
 
 

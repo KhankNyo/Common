@@ -31,6 +31,8 @@ typedef_struct(renderer_mesh_config);
 typedef_struct(renderer_sampler_config);
 typedef_struct(renderer_config);
 typedef_struct(renderer_resource_binding_config);
+typedef_struct(renderer_update_texture_config);
+typedef_struct(renderer_update_mesh_config);
 
 typedef renderer *renderer_handle;
 typedef handle(u64) renderer_graphics_pipeline_handle;
@@ -179,6 +181,18 @@ struct renderer_mesh_config
     isize IndexCount;
 };
 
+struct renderer_update_texture_config
+{
+    //u32 NewWidth;   /* 0 implies using the old width */
+    //u32 NewHeight;  /* 0 implies using the old height */
+};
+
+struct renderer_update_mesh_config
+{
+    i32 IndexCount;     /* 0 implies the same index count */
+    i32 VertexCount;    /* 0 implies the same vertex count */
+};
+
 struct renderer_config
 {
     renderer_resource_group_config *GlobalResourceConfig; /* can be NULL */
@@ -253,12 +267,16 @@ renderer_sampler_handle Renderer_CreateSampler(
 renderer_texture_handle Renderer_CreateMutableTexture(
     renderer_handle Renderer,
     renderer_resource_group_handle ResourceGroup,
-    const renderer_texture_config *TextureConfig
+    const renderer_texture_config *TextureConfig,
+    void **OutTextureBuffer,
+    isize *OutTextureBufferSizeBytes
 );
 renderer_mesh_handle Renderer_CreateMutableMesh(
     renderer_handle Renderer, 
     renderer_resource_group_handle ResourceGroup,
-    const renderer_mesh_config *MeshConfig
+    const renderer_mesh_config *MeshConfig,
+    void **OutVertexBuffer,
+    u32 **OutIndexBuffer
 );
 renderer_texture_handle Renderer_CreateStaticTexture(
     renderer_handle Renderer,
@@ -286,15 +304,14 @@ renderer_graphics_pipeline_handle Renderer_CreateGraphicsPipeline(
 void Renderer_UpdateMutableTexture(
     renderer_handle Renderer, 
     renderer_texture_handle MutableTexture,
-    const void *Buffer, u32 Width, u32 Height
+    const renderer_update_texture_config *Config
 );
 
 /* updatese a mutable mesh */
 void Renderer_UpdateMutableMesh(
     renderer_handle Renderer, 
     renderer_mesh_handle MutableMesh,
-    const void *VertexBuffer, isize VertexCount, 
-    const u32 *IndexBuffer, isize IndexCount
+    const renderer_update_mesh_config *Config
 );
 
 void Renderer_UpdateUniformBuffer(

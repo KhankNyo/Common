@@ -682,11 +682,11 @@ void Vkm_Destroy(vkm *Vkm)
     /* deallocate all memory */
     DynamicArray_Foreach(&Vkm->DeviceMemory, i)
     {
-        vkFreeMemory(Vkm->Device, i->Handle, NULL);
         if (i->MappedMemory)
         {
             vkUnmapMemory(Vkm->Device, i->Handle);
         }
+        vkFreeMemory(Vkm->Device, i->Handle, NULL);
     }
 
     /* deallocate all buffers */

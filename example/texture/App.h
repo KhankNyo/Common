@@ -19,6 +19,10 @@ struct app
     uint SelectedTexture;
     renderer_texture_handle Textures[TEXTURE_COUNT];
 
+    int CustomTextureWidth;
+    int CustomTextureHeight;
+    u32 *CustomTexture;
+    isize CustomTextureSizeBytes;
     arena_alloc Arena;
 };
 
