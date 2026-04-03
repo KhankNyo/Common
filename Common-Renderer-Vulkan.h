@@ -38,7 +38,9 @@ typedef_struct(vk_resource_group);
 typedef_struct(vk_update_resource);
 typedef_struct(vk_update_ubo);
 typedef_struct(vk_update_texture);
+typedef_struct(vk_update_mesh);
 
+typedef_struct(vk_staging_buffer);
 
 typedef enum 
 {
@@ -72,9 +74,9 @@ struct vk_mesh
     vkm_buffer_handle IndexBuffer;
     void *VertexBufferPtr;
     u32 *IndexBufferPtr;
-    isize VertexBufferSizeBytes, IndexBufferSizeBytes;
-    isize VertexCount;
-    isize IndexCount;
+    i32 VertexElementSizeBytes;
+    i32 VertexCount;
+    i32 IndexCount;
 };
 
 typedef enum 
@@ -142,6 +144,7 @@ typedef enum
 {
     VULKAN_UPDATE_RESOURCE_UBO = 1,
     VULKAN_UPDATE_RESOURCE_TEXTURE = 2,
+    VULKAN_UPDATE_RESOURCE_MESH = 3,
 } vk_update_resource_type;
 
 struct vk_update_resource
@@ -162,11 +165,13 @@ struct vk_update_resource
             int MipLevels;
             bool8 GenerateMipmap;
         } Texture;
+        struct vk_update_mesh {
+            vk_mesh *Ptr;
+        } Mesh;
     } As;
 };
 
 
-typedef_struct(vk_staging_buffer);
 
 struct renderer
 {

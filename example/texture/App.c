@@ -35,7 +35,7 @@ internal void UpdateUniformBuffer(app *App)
 void App_OnInit(app *App)
 {
     const char *AppName = "Hello";
-    Platform_Set(TargetFPS, 3000);
+    Platform_Set(TargetFPS, 2000);
     Platform_Set(WindowTitle, AppName);
     Platform_Set(VSyncEnable, true);
 
@@ -191,7 +191,6 @@ internal void InitRenderer(app *App, const char *AppName)
     /* create the renderer */
     {
         renderer_config Config = {
-            .ForceTripleBuffering = true,
             .AppName = AppName,
             .FramesInFlight = 3,
         };

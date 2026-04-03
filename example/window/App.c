@@ -1,17 +1,13 @@
 
 
+#include <string.h> /* memcpy */
+#include <math.h> /* sinf, cosf */
+
 #include "Platform-Core.h"
 #include "Renderer-Core.h"
 #include "App.h"
 
 
-typedef_struct(vertex_buffer);
-struct vertex_buffer
-{
-    rgba Color;
-    v3f Pos;
-    u32 Pad0;
-};
 
 internal void InitRenderer(app *App, const char *AppName);
 
@@ -34,7 +30,39 @@ void App_OnDeinit(app *App)
 
 void App_OnLoop(app *App)
 {
-    (void)App;
+    {
+        platform_window_dimensions WindowDimensions = Platform_Get(WindowDimensions);
+        float Tau = 3.14159*2;
+        float t = Platform_Get(ElapsedTime);
+        float x = t/4;
+        float HeightFactor = (sinf(t*Tau/2) + 1)*0.5*0.6 + 0.2;
+        float WidthFactor = HeightFactor*WindowDimensions.Height/WindowDimensions.Width;
+
+        vertex_buffer Vertices[] = {
+            [0] = {
+                .Color.At = {HeightFactor, 0, 0, 1}, 
+                .Pos.At = {cosf(x*Tau)*WidthFactor, sinf(x*Tau)*HeightFactor},
+            },
+            [1] = {
+                .Color.At = {0, HeightFactor, 0, 1}, 
+                .Pos.At = {cosf((x*Tau) - Tau/3)*WidthFactor, sinf(x*Tau - Tau/3)*HeightFactor},
+            },
+            [2] = {
+                .Color.At = {0, 0, HeightFactor, 1}, 
+                .Pos.At = {cosf(x*Tau + Tau/3)*WidthFactor, sinf(x*Tau + Tau/3)*HeightFactor},
+            },
+        };
+        u32 Indices[] = {
+            0, 1, 2
+        };
+        memcpy(App->VertexPtr, Vertices, sizeof Vertices);
+        memcpy(App->IndexPtr, Indices, sizeof Indices);
+        Renderer_UpdateMutableMesh(App->Renderer, App->MutableMesh, &(renderer_update_mesh_config) {
+            .VertexCount = 3,
+            .IndexCount = 3,
+        });
+    }
+
     double FrameTime = Platform_Get(FrameTime);
     printf("frame: %fs, fps: %f\r", FrameTime, 1 / FrameTime);
 }
@@ -42,14 +70,15 @@ void App_OnLoop(app *App)
 void App_OnRender(app *App)
 {
     renderer_draw_pipeline_group Groups[] = {
-        [0] = { .MeshHandle = App->FullScreenMesh }
+        [0] = { .MeshHandle = App->FullScreenMesh },
+        [1] = { .MeshHandle = App->MutableMesh }
     };
     renderer_draw_pipeline DrawPipelines[] = {
         [0] = {
             .GroupCount = STATIC_ARRAY_SIZE(Groups),
             .Groups = Groups,
             .GraphicsPipelineHandle = App->GraphicsPipeline,
-        }
+        },
     };
     Renderer_Draw(App->Renderer, DrawPipelines, STATIC_ARRAY_SIZE(DrawPipelines));
 }
@@ -80,7 +109,6 @@ internal void InitRenderer(app *App, const char *AppName)
     {
         renderer_config Config = {
             .FramesInFlight = 3,
-            .ForceTripleBuffering = false,
             .AppName = AppName,
         };
         App->Renderer = Renderer_Create(&Config);
@@ -88,10 +116,11 @@ internal void InitRenderer(app *App, const char *AppName)
 
     /* configure */
     {
+        renderer_msaa_flags Choose = RENDERER_MSAA_8X;
         renderer_msaa_flags Samples = Renderer_GetAvailableMSAAFlags(App->Renderer);
-        if ((Samples & RENDERER_MSAA_4X))
+        if ((Samples & Choose))
         {
-            Renderer_SetScreenMSAA(App->Renderer, RENDERER_MSAA_4X);
+            Renderer_SetScreenMSAA(App->Renderer, Choose);
         }
     }
 
@@ -131,6 +160,20 @@ internal void InitRenderer(app *App, const char *AppName)
         App->FullScreenMesh = Renderer_CreateStaticMesh(
             App->Renderer, App->ResourceGroup, &MeshConfig, Vertices, Indices
         );
+
+#if 1
+        App->IndexCapacity = 1024;
+        App->VertexCapacity = 1024;
+        App->MutableMesh = Renderer_CreateMutableMesh(
+            App->Renderer, App->ResourceGroup, 
+            &(renderer_mesh_config) {
+                .IndexCount = App->IndexCapacity,
+                .VertexCount = App->VertexCapacity,
+                .VertexBufferElementSizeBytes = sizeof(App->VertexPtr[0]),
+            }, 
+            (void **)&App->VertexPtr, &App->IndexPtr
+        );
+#endif
     }
 
     {

@@ -1327,6 +1327,46 @@ internal void Vulkan_CmdGenerateMipmap(
     }
 }
 
+/* returns the transfer size */
+internal isize Vulkan_CmdTransferMesh(renderer *Vk, u8 *StagingBufferPtr, isize StagingBufferOffset, VkCommandBuffer CmdBuf, vk_mesh *Mesh)
+{
+    vk_resource_group *ResourceGroup = Mesh->Owner;
+    isize VertexBufferSizeBytes = Mesh->VertexCount * Mesh->VertexElementSizeBytes;
+    isize IndexBufferSizeBytes = Mesh->IndexCount * sizeof(Mesh->IndexBufferPtr[0]);
+    isize TransferSize = VertexBufferSizeBytes + IndexBufferSizeBytes;
+    if (NULL == StagingBufferPtr)
+    {
+        Vulkan_ResizeStagingBuffer(Vk, TransferSize);
+        StagingBufferPtr = Vk->StagingBuffer.Mapped;
+        StagingBufferOffset = Vk->StagingBuffer.Info.OffsetBytes;
+    }
+
+    vkm_buffer_info Vertex = Vkm_GetBufferInfo(&ResourceGroup->GpuAllocator, Mesh->VertexBuffer);
+    vkm_buffer_info Index = Vkm_GetBufferInfo(&ResourceGroup->GpuAllocator, Mesh->IndexBuffer);
+    memcpy(StagingBufferPtr, Mesh->VertexBufferPtr, VertexBufferSizeBytes);
+    memcpy(StagingBufferPtr + VertexBufferSizeBytes, Mesh->IndexBufferPtr, IndexBufferSizeBytes);
+
+    vkCmdCopyBuffer(CmdBuf, 
+        Vk->StagingBuffer.Info.Buffer,
+        Vertex.Buffer,
+        1, &(VkBufferCopy) {
+            .size = VertexBufferSizeBytes,
+            .srcOffset = StagingBufferOffset,
+            .dstOffset = Vertex.OffsetBytes,
+        }
+    );
+    vkCmdCopyBuffer(CmdBuf, 
+        Vk->StagingBuffer.Info.Buffer,
+        Index.Buffer,
+        1, &(VkBufferCopy) {
+            .size = IndexBufferSizeBytes,
+            .srcOffset = StagingBufferOffset + VertexBufferSizeBytes,
+            .dstOffset = Index.OffsetBytes,
+        }
+    );
+    return TransferSize;
+}
+
 /* NOTE: src buffer must have the same format as DstFormat */
 internal void Vulkan_CmdCopyBufferToImage(
     VkCommandBuffer CmdBuf,
@@ -1824,7 +1864,7 @@ internal void Vulkan_TransferResources(renderer *Vk, int CurrentFrameIndex)
 
     for (vk_update_resource *i = Vk->UpdateResourceHead, *Prev = NULL; i;)
     {
-        bool32 ShouldRemove = false;
+        bool32 ShouldRemove = true;
         switch (i->Type)
         {
         case VULKAN_UPDATE_RESOURCE_UBO:
@@ -1870,7 +1910,15 @@ internal void Vulkan_TransferResources(renderer *Vk, int CurrentFrameIndex)
             );
             Offset += Texture->ImageBufferSizeBytes;
             Texture->State = VULKAN_TEXTURE_STATE_SHADER_READONLY;
-            ShouldRemove = true;
+        } break;
+        case VULKAN_UPDATE_RESOURCE_MESH:
+        {
+            vk_update_mesh *MeshUpdate = &i->As.Mesh;
+            vk_mesh *Mesh = MeshUpdate->Ptr;
+            isize TransferSize = Vulkan_CmdTransferMesh(Vk, StagingBufferPtr, Offset, CmdBuf, Mesh);
+
+            StagingBufferPtr += TransferSize;
+            Offset += TransferSize;
         } break;
         }
 
@@ -2807,8 +2855,7 @@ internal vk_mesh *Vulkan_ResourceGroup_CreateMesh(
     vk_mesh *MeshPtr = Arena_AllocNonZero(&ResourceGroup->CpuArena, sizeof(*MeshPtr));
     *MeshPtr = (vk_mesh) {
         .Owner = ResourceGroup,
-        .IndexBufferSizeBytes = IndexBufferSizeBytes,
-        .VertexBufferSizeBytes = VertexBufferSizeBytes,
+        .VertexElementSizeBytes = MeshConfig->VertexBufferElementSizeBytes,
         .VertexCount = MeshConfig->VertexCount,
         .IndexCount = MeshConfig->IndexCount,
 
@@ -2836,35 +2883,15 @@ renderer_mesh_handle Renderer_CreateStaticMesh(
 
     VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(&Vk->GpuContext, Vk->CommandPool);
     {
-        vkm_buffer_info Vertex = Vkm_GetBufferInfo(&ResourceGroup->GpuAllocator, MeshPtr->VertexBuffer);
-        vkm_buffer_info Index = Vkm_GetBufferInfo(&ResourceGroup->GpuAllocator, MeshPtr->IndexBuffer);
-        Vulkan_ResizeStagingBuffer(Vk, MeshPtr->VertexBufferSizeBytes + MeshPtr->IndexBufferSizeBytes);
-        memcpy(Vk->StagingBuffer.Mapped, VertexBufferPtr, MeshPtr->VertexBufferSizeBytes);
-        memcpy(Vk->StagingBuffer.Mapped + MeshPtr->VertexBufferSizeBytes, IndexBufferPtr, MeshPtr->IndexBufferSizeBytes);
-
-        vkCmdCopyBuffer(CmdBuf, 
-            Vk->StagingBuffer.Info.Buffer,
-            Vertex.Buffer,
-            1, &(VkBufferCopy) {
-                .size = MeshPtr->VertexBufferSizeBytes,
-                .srcOffset = Vk->StagingBuffer.Info.OffsetBytes,
-                .dstOffset = Vertex.OffsetBytes,
-            }
-        );
-        vkCmdCopyBuffer(CmdBuf, 
-            Vk->StagingBuffer.Info.Buffer,
-            Index.Buffer,
-            1, &(VkBufferCopy) {
-                .size = MeshPtr->IndexBufferSizeBytes,
-                .srcOffset = Vk->StagingBuffer.Info.OffsetBytes + MeshPtr->VertexBufferSizeBytes,
-                .dstOffset = Index.OffsetBytes,
-            }
-        );
+        MeshPtr->VertexBufferPtr = (void *)VertexBufferPtr;
+        MeshPtr->IndexBufferPtr = (u32 *)IndexBufferPtr;
+        Vulkan_CmdTransferMesh(Vk, NULL, 0, CmdBuf, MeshPtr);
+        MeshPtr->VertexBufferPtr = NULL;
+        MeshPtr->IndexBufferPtr = NULL;
     }
     Vulkan_EndSingleTimeCommandBuffer(&Vk->GpuContext, Vk->CommandPool, CmdBuf);
     return (renderer_mesh_handle) { (u64)MeshPtr };
 }
-
 
 renderer_mesh_handle Renderer_CreateMutableMesh(
     renderer *Vk, 
@@ -2876,13 +2903,31 @@ renderer_mesh_handle Renderer_CreateMutableMesh(
     vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
     vk_mesh *MeshPtr = Vulkan_ResourceGroup_CreateMesh(ResourceGroup, MeshConfig);
 
-    isize AlignedVertexBufferSizeBytes = Memory_AlignSize(MeshPtr->VertexBufferSizeBytes, ResourceGroup->CpuAllocator.Alignment);
-    void *Buffer = FreeList_Alloc(&ResourceGroup->CpuAllocator, AlignedVertexBufferSizeBytes + MeshPtr->IndexBufferSizeBytes);
-    MeshPtr->VertexBufferPtr = Buffer;
-    MeshPtr->IndexBufferPtr = (u32 *)((u8 *)Buffer + AlignedVertexBufferSizeBytes);
+    MeshPtr->VertexBufferPtr = FreeList_Alloc(&ResourceGroup->CpuAllocator, MeshPtr->VertexCount*MeshPtr->VertexElementSizeBytes);
+    MeshPtr->IndexBufferPtr = FreeList_Alloc(&ResourceGroup->CpuAllocator, MeshPtr->IndexCount*sizeof(MeshPtr->IndexBufferPtr[0]));
     *OutVertexBuffer = MeshPtr->VertexBufferPtr;
     *OutIndexBuffer = MeshPtr->IndexBufferPtr;
     return (renderer_mesh_handle) { (u64)MeshPtr };
+}
+
+void Renderer_UpdateMutableMesh(
+    renderer *Vk, 
+    renderer_mesh_handle MutableMesh,
+    const renderer_update_mesh_config *Config
+) {
+    vk_mesh *Mesh = (typeof(Mesh))MutableMesh.Value;
+    ASSERT(Mesh->VertexBufferPtr && Mesh->IndexBufferPtr, "Cannot update static mesh");
+    ASSERT(Config->VertexCount <= Mesh->VertexCount && Config->IndexCount <= Mesh->IndexCount, "TODO: resize buffers");
+
+    Mesh->VertexCount = Config->VertexCount;
+    Mesh->IndexCount = Config->IndexCount;
+    Vk->StagingBufferRequiredSizeBytes += Mesh->VertexCount*Mesh->VertexElementSizeBytes + Mesh->IndexCount*sizeof(Mesh->IndexBufferPtr[0]);
+    Vulkan_PushUpdateResource(Vk, &(vk_update_resource) {
+        .Type = VULKAN_UPDATE_RESOURCE_MESH,
+        .As.Mesh = {
+            .Ptr = Mesh,
+        },
+    });
 }
 
 

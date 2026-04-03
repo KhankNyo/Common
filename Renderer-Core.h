@@ -201,8 +201,8 @@ struct renderer_update_texture_config
 
 struct renderer_update_mesh_config
 {
-    i32 IndexCount;     /* 0 implies the same index count */
-    i32 VertexCount;    /* 0 implies the same vertex count */
+    isize VertexCount;
+    isize IndexCount;
 };
 
 struct renderer_config
