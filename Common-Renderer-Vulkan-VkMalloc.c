@@ -947,9 +947,8 @@ void *Vkm_MapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle)
     return (u8 *)DeviceMemory->MappedMemory + Entry->DeviceMemoryOffsetBytes + Chunk->OffsetAligned * VKM_MIN_ALIGNMENT;
 }
 
-void Vkm_UnmapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle, void *MappedMemory)
+void Vkm_UnmapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle)
 {
-    (void)MappedMemory;
     vkm_buffer_chunk *Chunk = BufferHandle.Value;
     ASSERT(IN_RANGE(0, Chunk->EntryIndex, Vkm->BufferPool.Count - 1), "Invalid handle");
 

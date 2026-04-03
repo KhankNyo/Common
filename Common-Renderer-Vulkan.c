@@ -124,14 +124,16 @@ internal vk_graphics_pipeline *Vulkan_ResourceGroup_GetGraphicsPipeline(renderer
     return &Result.ResourceGroup->GraphicsPipelines.Data[Result.Handle];
 }
 
-internal void Vulkan_ResourceGroup_ResizeStagingBuffer(vk_resource_group *ResourceGroup, isize SizeBytes)
+internal void Vulkan_ResizeStagingBuffer(renderer *Vk, isize SizeBytes)
 {
-    if (SizeBytes > ResourceGroup->StagingBufferInfo.CapacityBytes)
+    vk_staging_buffer *StagingBuffer = &Vk->StagingBuffer;
+    vkm *Vkm = &Vk->GlobalResourceGroup->GpuAllocator;
+    if (SizeBytes > StagingBuffer->Info.CapacityBytes)
     {
-        if (ResourceGroup->StagingBufferInfo.CapacityBytes == 0)
+        if (StagingBuffer->Info.CapacityBytes == 0)
         {
-            ResourceGroup->StagingBuffer = Vkm_CreateBuffer(
-                &ResourceGroup->GpuAllocator, 
+            StagingBuffer->Buffer = Vkm_CreateBuffer(
+                Vkm, 
                 &(vkm_buffer_config) {
                     .BufferType = VKM_BUFFER_TYPE_STAGING,
                     .MemoryCapacityBytes = SizeBytes,
@@ -140,11 +142,11 @@ internal void Vulkan_ResourceGroup_ResizeStagingBuffer(vk_resource_group *Resour
         }
         else
         {
-            Vkm_UnmapBufferMemory(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer, ResourceGroup->StagingBufferMapped);
-            ResourceGroup->StagingBuffer = Vkm_ResizeBuffer(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer, SizeBytes);
+            Vkm_UnmapBufferMemory(Vkm, StagingBuffer->Buffer);
+            StagingBuffer->Buffer = Vkm_ResizeBuffer(Vkm, StagingBuffer->Buffer, SizeBytes);
         }
-        ResourceGroup->StagingBufferInfo = Vkm_GetBufferInfo(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer);
-        ResourceGroup->StagingBufferMapped = Vkm_MapBufferMemory(&ResourceGroup->GpuAllocator, ResourceGroup->StagingBuffer);
+        StagingBuffer->Info = Vkm_GetBufferInfo(Vkm, StagingBuffer->Buffer);
+        StagingBuffer->Mapped = Vkm_MapBufferMemory(Vkm, StagingBuffer->Buffer);
     }
 }
 
@@ -1501,11 +1503,9 @@ internal vk_render_target Vulkan_CreateRenderTarget(
     VkImage *SwapchainImages;
     VkImageView *SwapchainImageViews;
     {
-        {
-            vkGetSwapchainImagesKHR(Device, Swapchain->Handle, &ImageCount, NULL);
-            Arena_AllocArray(Arena, &SwapchainImages, ImageCount);
-            vkGetSwapchainImagesKHR(Device, Swapchain->Handle, &ImageCount, SwapchainImages);
-        }
+        vkGetSwapchainImagesKHR(Device, Swapchain->Handle, &ImageCount, NULL);
+        Arena_AllocArray(Arena, &SwapchainImages, ImageCount);
+        vkGetSwapchainImagesKHR(Device, Swapchain->Handle, &ImageCount, SwapchainImages);
 
         {
             Arena_AllocArray(Arena, &SwapchainImageViews, ImageCount);
@@ -1817,10 +1817,10 @@ internal VkFormat Vulkan_GetVkFormat(renderer_image_format Format)
 internal void Vulkan_TransferResources(renderer *Vk, int CurrentFrameIndex)
 {
     VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(&Vk->GpuContext, Vk->CommandPool);
-    Vulkan_ResourceGroup_ResizeStagingBuffer(Vk->GlobalResourceGroup, Vk->StagingBufferRequiredSize);
-    Vk->StagingBufferRequiredSize = 0;
-    isize Offset = Vk->GlobalResourceGroup->StagingBufferInfo.OffsetBytes;
-    u8 *StagingBufferPtr = Vk->GlobalResourceGroup->StagingBufferMapped;
+    Vulkan_ResizeStagingBuffer(Vk, Vk->StagingBufferRequiredSizeBytes);
+    Vk->StagingBufferRequiredSizeBytes = 0;
+    isize Offset = Vk->StagingBuffer.Info.OffsetBytes;
+    u8 *StagingBufferPtr = Vk->StagingBuffer.Mapped;
 
     for (vk_update_resource *i = Vk->UpdateResourceHead, *Prev = NULL; i;)
     {
@@ -1864,7 +1864,7 @@ internal void Vulkan_TransferResources(renderer *Vk, int CurrentFrameIndex)
             StagingBufferPtr += Texture->ImageBufferSizeBytes;
 
             Vulkan_CmdCopyBufferToImage(CmdBuf, Vulkan_GetPhysicalDevice(Vk),
-                ResourceGroup->StagingBufferInfo.Buffer, Offset,
+                Vk->StagingBuffer.Info.Buffer, Offset,
                 TextureImageInfo.Image, TextureImageInfo.Width, TextureImageInfo.Height, TextureImageInfo.MipLevels,
                 TextureImageInfo.Format, TextureUpdate->GenerateMipmap
             );
@@ -2659,36 +2659,6 @@ renderer_sampler_handle Renderer_CreateSampler(
     return Handle;
 }
 
-
-internal void Vulkan_TransferDataToGpuLocalMemory(
-    renderer *Vk, 
-    VkCommandPool CommandPool, 
-    const vk_resource_group *DstOwner, vkm_buffer_handle Dst, 
-    const void *Src, isize SrcSizeBytes
-) {
-    /* TODO: use a dedicated transfer queue */
-    /* TODO: better way to do staging buffer, having to create an entire allocator just to use a staging buffer is ridiculous */
-    vk_resource_group *Global = Vk->GlobalResourceGroup;
-    const vk_gpu_context *GpuContext = &Vk->GpuContext;
-    {
-        vkm_buffer_info DstBufferInfo = Vkm_GetBufferInfo(&DstOwner->GpuAllocator, Dst);
-        Vulkan_ResourceGroup_ResizeStagingBuffer(Global, SrcSizeBytes);
-        memcpy(Global->StagingBufferMapped, Src, SrcSizeBytes);
-
-        VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, CommandPool);
-        vkCmdCopyBuffer(CmdBuf,
-            Global->StagingBufferInfo.Buffer,
-            DstBufferInfo.Buffer,
-            1, &(VkBufferCopy) {
-                .dstOffset = DstBufferInfo.OffsetBytes,
-                .srcOffset = Global->StagingBufferInfo.OffsetBytes,
-                .size = SrcSizeBytes,
-            }
-        );
-        Vulkan_EndSingleTimeCommandBuffer(GpuContext, CommandPool, CmdBuf);
-    }
-}
-
 renderer_texture_handle Renderer_CreateStaticTexture(
     renderer *Vk,
     renderer_resource_group_handle ResourceGroupHandle,
@@ -2706,8 +2676,8 @@ renderer_texture_handle Renderer_CreateStaticTexture(
         vk_gpu_context *GpuContext = &Vk->GpuContext;
         isize ImageSizeBytes = TextureConfig->Width * TextureConfig->Height * sizeof(u32);
 
-        Vulkan_ResourceGroup_ResizeStagingBuffer(ResourceGroup, ImageSizeBytes);
-        memcpy(ResourceGroup->StagingBufferMapped, ImageData, ImageSizeBytes);
+        Vulkan_ResizeStagingBuffer(Vk, ImageSizeBytes);
+        memcpy(Vk->StagingBuffer.Mapped, ImageData, ImageSizeBytes);
 
         TextureImageHandle = Vkm_CreateImage(
             &ResourceGroup->GpuAllocator, 
@@ -2727,7 +2697,7 @@ renderer_texture_handle Renderer_CreateStaticTexture(
         /* copy image data to gpu memory */
         VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, Vk->CommandPool);
         Vulkan_CmdCopyBufferToImage(CmdBuf, Vulkan_GetPhysicalDevice(Vk),
-            ResourceGroup->StagingBufferInfo.Buffer, ResourceGroup->StagingBufferInfo.OffsetBytes,
+            Vk->StagingBuffer.Info.Buffer, Vk->StagingBuffer.Info.OffsetBytes,
             TextureImageInfo.Image, TextureImageInfo.Width, TextureImageInfo.Height, TextureImageInfo.MipLevels,
             TextureImageInfo.Format, TextureConfig->GenerateMipmap
         );
@@ -2746,45 +2716,6 @@ renderer_texture_handle Renderer_CreateStaticTexture(
         .Value = Vulkan_ResourceGroup_MakeHandle(ResourceGroup, Index),
     };
     return Handle;
-}
-
-renderer_mesh_handle Renderer_CreateStaticMesh(
-    renderer *Vk,
-    renderer_resource_group_handle ResourceGroupHandle,
-    const renderer_mesh_config *MeshConfig,
-    const void *VertexBufferPtr,
-    const u32 *IndexBufferPtr
-) {
-    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
-
-    isize VertexBufferSizeBytes = MeshConfig->VertexCount * MeshConfig->VertexBufferElementSizeBytes;
-    isize IndexBufferSizeBytes = MeshConfig->IndexCount * sizeof(u32);
-    /*
-     * So apparently, the VkBufferUsageFlags is just a suggestion, 
-     * but for certain vkCmd* to work, you'd need to just *HAVE* the appropriate flags
-     *
-     * eg: vkCmdBindIndexBuffers needs VK_BUFFER_USAGE_INDEX_BUFFER_BIT, though it can have other flags, even VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-     * */
-    vk_mesh *MeshPtr = FreeList_AllocNonZero(&ResourceGroup->CpuAllocator, sizeof(*MeshPtr));
-    *MeshPtr = (vk_mesh) {
-        .Owner = ResourceGroup,
-        .IndexBufferSizeBytes = IndexBufferSizeBytes,
-        .VertexBufferSizeBytes = VertexBufferSizeBytes,
-        .VertexCount = MeshConfig->VertexCount,
-        .IndexCount = MeshConfig->IndexCount,
-
-        .VertexBuffer = Vkm_CreateBuffer(&ResourceGroup->GpuAllocator, &(vkm_buffer_config) {
-            .BufferType = VKM_BUFFER_TYPE_VBO,
-            .MemoryCapacityBytes = VertexBufferSizeBytes,
-        }),
-        .IndexBuffer = Vkm_CreateBuffer(&ResourceGroup->GpuAllocator, &(vkm_buffer_config) {
-            .BufferType = VKM_BUFFER_TYPE_EBO,
-            .MemoryCapacityBytes = IndexBufferSizeBytes,
-        }), 
-    };
-    Vulkan_TransferDataToGpuLocalMemory(Vk, Vk->CommandPool, ResourceGroup, MeshPtr->VertexBuffer, VertexBufferPtr, VertexBufferSizeBytes);
-    Vulkan_TransferDataToGpuLocalMemory(Vk, Vk->CommandPool, ResourceGroup, MeshPtr->IndexBuffer, IndexBufferPtr, IndexBufferSizeBytes);
-    return (renderer_mesh_handle) { (u64)MeshPtr };
 }
 
 renderer_texture_handle Renderer_CreateMutableTexture(
@@ -2850,7 +2781,7 @@ void Renderer_UpdateMutableTexture(
     vk_resource_group_and_index Extract = Vulkan_ResourceGroup_ExtractHandle(TextureHandle.Value);
     vk_texture *Texture = &Extract.ResourceGroup->Textures.Data[Extract.Handle];
     ASSERT(Texture->ImageBuffer, "Cannot update immutable texture");
-    Vk->StagingBufferRequiredSize += Texture->ImageBufferSizeBytes;
+    Vk->StagingBufferRequiredSizeBytes += Texture->ImageBufferSizeBytes;
 
     Vulkan_PushUpdateResource(Vk,
         &(vk_update_resource) {
@@ -2866,16 +2797,92 @@ void Renderer_UpdateMutableTexture(
     );
 }
 
+internal vk_mesh *Vulkan_ResourceGroup_CreateMesh(
+    vk_resource_group *ResourceGroup, 
+    const renderer_mesh_config *MeshConfig
+) {
+    isize VertexBufferSizeBytes = MeshConfig->VertexCount * MeshConfig->VertexBufferElementSizeBytes;
+    isize IndexBufferSizeBytes = MeshConfig->IndexCount * sizeof(u32);
+
+    vk_mesh *MeshPtr = Arena_AllocNonZero(&ResourceGroup->CpuArena, sizeof(*MeshPtr));
+    *MeshPtr = (vk_mesh) {
+        .Owner = ResourceGroup,
+        .IndexBufferSizeBytes = IndexBufferSizeBytes,
+        .VertexBufferSizeBytes = VertexBufferSizeBytes,
+        .VertexCount = MeshConfig->VertexCount,
+        .IndexCount = MeshConfig->IndexCount,
+
+        .VertexBuffer = Vkm_CreateBuffer(&ResourceGroup->GpuAllocator, &(vkm_buffer_config) {
+            .BufferType = VKM_BUFFER_TYPE_VBO,
+            .MemoryCapacityBytes = VertexBufferSizeBytes,
+        }),
+        .IndexBuffer = Vkm_CreateBuffer(&ResourceGroup->GpuAllocator, &(vkm_buffer_config) {
+            .BufferType = VKM_BUFFER_TYPE_EBO,
+            .MemoryCapacityBytes = IndexBufferSizeBytes,
+        }), 
+    };
+    return MeshPtr;
+}
+
+renderer_mesh_handle Renderer_CreateStaticMesh(
+    renderer *Vk,
+    renderer_resource_group_handle ResourceGroupHandle,
+    const renderer_mesh_config *MeshConfig,
+    const void *VertexBufferPtr,
+    const u32 *IndexBufferPtr
+) {
+    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
+    vk_mesh *MeshPtr = Vulkan_ResourceGroup_CreateMesh(ResourceGroup, MeshConfig);
+
+    VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(&Vk->GpuContext, Vk->CommandPool);
+    {
+        vkm_buffer_info Vertex = Vkm_GetBufferInfo(&ResourceGroup->GpuAllocator, MeshPtr->VertexBuffer);
+        vkm_buffer_info Index = Vkm_GetBufferInfo(&ResourceGroup->GpuAllocator, MeshPtr->IndexBuffer);
+        Vulkan_ResizeStagingBuffer(Vk, MeshPtr->VertexBufferSizeBytes + MeshPtr->IndexBufferSizeBytes);
+        memcpy(Vk->StagingBuffer.Mapped, VertexBufferPtr, MeshPtr->VertexBufferSizeBytes);
+        memcpy(Vk->StagingBuffer.Mapped + MeshPtr->VertexBufferSizeBytes, IndexBufferPtr, MeshPtr->IndexBufferSizeBytes);
+
+        vkCmdCopyBuffer(CmdBuf, 
+            Vk->StagingBuffer.Info.Buffer,
+            Vertex.Buffer,
+            1, &(VkBufferCopy) {
+                .size = MeshPtr->VertexBufferSizeBytes,
+                .srcOffset = Vk->StagingBuffer.Info.OffsetBytes,
+                .dstOffset = Vertex.OffsetBytes,
+            }
+        );
+        vkCmdCopyBuffer(CmdBuf, 
+            Vk->StagingBuffer.Info.Buffer,
+            Index.Buffer,
+            1, &(VkBufferCopy) {
+                .size = MeshPtr->IndexBufferSizeBytes,
+                .srcOffset = Vk->StagingBuffer.Info.OffsetBytes + MeshPtr->VertexBufferSizeBytes,
+                .dstOffset = Index.OffsetBytes,
+            }
+        );
+    }
+    Vulkan_EndSingleTimeCommandBuffer(&Vk->GpuContext, Vk->CommandPool, CmdBuf);
+    return (renderer_mesh_handle) { (u64)MeshPtr };
+}
+
+
 renderer_mesh_handle Renderer_CreateMutableMesh(
     renderer *Vk, 
     renderer_resource_group_handle ResourceGroupHandle,
-    const renderer_mesh_config *Config,
+    const renderer_mesh_config *MeshConfig,
     void **OutVertexBuffer,
     u32 **OutIndexBuffer
 ) {
     vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
+    vk_mesh *MeshPtr = Vulkan_ResourceGroup_CreateMesh(ResourceGroup, MeshConfig);
 
-    //TODO("Renderer_CreateMutableMesh()");
+    isize AlignedVertexBufferSizeBytes = Memory_AlignSize(MeshPtr->VertexBufferSizeBytes, ResourceGroup->CpuAllocator.Alignment);
+    void *Buffer = FreeList_Alloc(&ResourceGroup->CpuAllocator, AlignedVertexBufferSizeBytes + MeshPtr->IndexBufferSizeBytes);
+    MeshPtr->VertexBufferPtr = Buffer;
+    MeshPtr->IndexBufferPtr = (u32 *)((u8 *)Buffer + AlignedVertexBufferSizeBytes);
+    *OutVertexBuffer = MeshPtr->VertexBufferPtr;
+    *OutIndexBuffer = MeshPtr->IndexBufferPtr;
+    return (renderer_mesh_handle) { (u64)MeshPtr };
 }
 
 

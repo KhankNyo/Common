@@ -216,7 +216,7 @@ vkm_buffer_handle Vkm_ResizeBuffer(vkm *Vkm, vkm_buffer_handle BufferHandle, i64
 
 /* map will only succeed if the buffer is VKM_BUFFER_TYPE_STAGING or VKM_BUFFER_TYPE_UBO */
 void *Vkm_MapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle);
-void Vkm_UnmapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle, void *MappedMemory);
+void Vkm_UnmapBufferMemory(vkm *Vkm, vkm_buffer_handle BufferHandle);
 
 vkm_buffer_info Vkm_GetBufferInfo(const vkm *Vkm, vkm_buffer_handle BufferHandle);
 vkm_image_info Vkm_GetImageInfo(const vkm *Vkm, vkm_image_handle ImageHandle);

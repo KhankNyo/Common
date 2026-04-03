@@ -70,6 +70,8 @@ struct vk_mesh
     vk_resource_group *Owner;
     vkm_buffer_handle VertexBuffer;
     vkm_buffer_handle IndexBuffer;
+    void *VertexBufferPtr;
+    u32 *IndexBufferPtr;
     isize VertexBufferSizeBytes, IndexBufferSizeBytes;
     isize VertexCount;
     isize IndexCount;
@@ -130,10 +132,6 @@ struct vk_resource_group
     u8 *UniformBufferTmp;
     i32 UniformBufferTmpCapacity;
 
-    vkm_buffer_handle StagingBuffer;
-    vkm_buffer_info StagingBufferInfo;
-    void *StagingBufferMapped;
-
     VkDescriptorPool DescriptorPool;
     VkDescriptorSetLayout DescriptorSetLayout;
     /* NOTE: there are Vk->FramesInFlight amount of DescriptorSets */
@@ -168,6 +166,8 @@ struct vk_update_resource
 };
 
 
+typedef_struct(vk_staging_buffer);
+
 struct renderer
 {
     arena_alloc Arena; /* owns the renderer */
@@ -198,7 +198,12 @@ struct renderer
                       *GlobalResourceGroup;
     vk_update_resource *UpdateResourceHead,
                        *UpdateResourceFree;
-    i64 StagingBufferRequiredSize;
+    i64 StagingBufferRequiredSizeBytes;
+    struct vk_staging_buffer {
+        vkm_buffer_handle Buffer;
+        vkm_buffer_info Info;
+        u8 *Mapped;
+    } StagingBuffer;
 
     platform_thread_handle RecreateSwapchainAndRenderTargetThread;
     VkSurfaceFormatKHR SwapchainSurfaceFormat;
