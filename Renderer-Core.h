@@ -26,8 +26,7 @@ typedef_struct(renderer_draw_pipeline);
 typedef_struct(renderer_draw_pipeline_group);
 typedef_struct(renderer_scissor);
 typedef_struct(renderer_resource_group_config);
-typedef_struct(renderer_static_texture_config);
-typedef_struct(renderer_mutable_texture_config);
+typedef_struct(renderer_texture_config);
 typedef_struct(renderer_mesh_config);
 typedef_struct(renderer_sampler_config);
 typedef_struct(renderer_config);
@@ -167,21 +166,13 @@ struct renderer_sampler_config
     bool8 EnableAnisotropyFiltering;
 };
 
-struct renderer_static_texture_config
+struct renderer_texture_config
 {
     renderer_sampler_handle SamplerHandle;
     renderer_image_format Format;
     u32 Width, Height;
-    int MipLevels;          /* will be 1 if 0 was provided */
-    bool8 GenerateMipmap;
-};
-
-struct renderer_mutable_texture_config
-{
-    renderer_sampler_handle SamplerHandle;
-    renderer_image_format Format;
-    u32 Width, Height;
-    int MipLevels;
+    int MipLevels;                              /* will be 1 if 0 was provided */
+    bool8 GenerateMipmap;                       /* ignored when creating a mutable texture */
 };
 
 struct renderer_mesh_config
@@ -279,7 +270,7 @@ renderer_sampler_handle Renderer_CreateSampler(
 renderer_texture_handle Renderer_CreateMutableTexture(
     renderer_handle Renderer,
     renderer_resource_group_handle ResourceGroup,
-    const renderer_mutable_texture_config *TextureConfig,
+    const renderer_texture_config *TextureConfig,
     void **OutTextureBuffer,
     isize *OutTextureBufferSizeBytes
 );
@@ -293,7 +284,7 @@ renderer_mesh_handle Renderer_CreateMutableMesh(
 renderer_texture_handle Renderer_CreateStaticTexture(
     renderer_handle Renderer,
     renderer_resource_group_handle ResourceGroup,
-    const renderer_static_texture_config *TextureConfig,
+    const renderer_texture_config *TextureConfig,
     const void *Image
 );
 renderer_mesh_handle Renderer_CreateStaticMesh(
@@ -364,7 +355,7 @@ force_inline void Renderer__InitDefaultResources(renderer_handle Renderer)
 
     /* default texture */
     {
-        renderer_static_texture_config TextureConfig = {
+        renderer_texture_config TextureConfig = {
             .SamplerHandle = { 0 },
             .Format = RENDERER_IMAGE_FORMAT_RGBA, 
             .Width = 1,

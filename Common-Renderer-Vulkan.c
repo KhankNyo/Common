@@ -2707,59 +2707,70 @@ renderer_sampler_handle Renderer_CreateSampler(
     return Handle;
 }
 
+internal u32 Vulkan_ResourceGroup_CreateTexture(
+    renderer *Vk,
+    vk_resource_group *ResourceGroup,
+    const renderer_texture_config *TextureConfig,
+    vk_texture_state InitialState,
+    vkm_image_info *OutInfo,
+    isize *OutImageSizeBytes
+) {
+    int MipLevels = TextureConfig->MipLevels? TextureConfig->MipLevels : 1;
+    VkFormat ImageFormat = Vulkan_GetVkFormat(TextureConfig->Format);
+
+    vkm_image_handle TextureImageHandle = Vkm_CreateImage(
+        &ResourceGroup->GpuAllocator, 
+        &(vkm_image_config) {
+            .Width = TextureConfig->Width, 
+            .Height = TextureConfig->Height, 
+            .MipLevels = MipLevels,
+            .Sample = VK_SAMPLE_COUNT_1_BIT,
+            .Format = ImageFormat,
+            .Tiling = VK_IMAGE_TILING_OPTIMAL,
+            .Usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,
+            .Aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+        }
+    );
+    vkm_image_info Info = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, TextureImageHandle);
+
+    VkSampler Sampler = Vulkan_ResourceGroup_GetSampler(Vk, TextureConfig->SamplerHandle);
+    u32 Index = Vulkan_ResourceGroup_PushTexture(ResourceGroup, &(vk_texture) {
+        .State = InitialState,
+        .Image = TextureImageHandle,
+        .ImageView = Info.ImageView,
+        .SamplerReference = Sampler,
+    });
+    *OutImageSizeBytes = Info.PixelSizeBytes*Info.Width*Info.Height;
+    *OutInfo = Info;
+    return Index;
+}
+
 renderer_texture_handle Renderer_CreateStaticTexture(
     renderer *Vk,
     renderer_resource_group_handle ResourceGroupHandle,
-    const renderer_static_texture_config *TextureConfig,
+    const renderer_texture_config *Config,
     const void *ImageData
 ) {
     vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
-    int MipLevels = TextureConfig->MipLevels == 0? 1 : TextureConfig->MipLevels;
-
-    VkFormat ImageFormat = Vulkan_GetVkFormat(TextureConfig->Format);
-
-    vkm_image_handle TextureImageHandle;
-    vkm_image_info TextureImageInfo;
+    isize ImageSizeBytes;
+    vkm_image_info Info;
+    u32 Index = Vulkan_ResourceGroup_CreateTexture(Vk, 
+        ResourceGroup, Config, VULKAN_TEXTURE_STATE_SHADER_READONLY, 
+        &Info, &ImageSizeBytes
+    );
     {
-        vk_gpu_context *GpuContext = &Vk->GpuContext;
-        isize ImageSizeBytes = TextureConfig->Width * TextureConfig->Height * sizeof(u32);
-
+        /* copy image data to gpu memory */
         Vulkan_ResizeStagingBuffer(Vk, ImageSizeBytes);
         memcpy(Vk->StagingBuffer.Mapped, ImageData, ImageSizeBytes);
 
-        TextureImageHandle = Vkm_CreateImage(
-            &ResourceGroup->GpuAllocator, 
-            &(vkm_image_config) {
-                .Width = TextureConfig->Width, 
-                .Height = TextureConfig->Height, 
-                .MipLevels = MipLevels,
-                .Sample = VK_SAMPLE_COUNT_1_BIT,
-                .Format = ImageFormat,
-                .Tiling = VK_IMAGE_TILING_OPTIMAL,
-                .Usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,
-                .Aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-            }
-        );
-        TextureImageInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, TextureImageHandle);
-
-        /* copy image data to gpu memory */
-        VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(GpuContext, Vk->CommandPool);
+        VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(&Vk->GpuContext, Vk->CommandPool);
         Vulkan_CmdCopyBufferToImage(CmdBuf, Vulkan_GetPhysicalDevice(Vk),
             Vk->StagingBuffer.Info.Buffer, Vk->StagingBuffer.Info.OffsetBytes,
-            TextureImageInfo.Image, TextureImageInfo.Width, TextureImageInfo.Height, TextureImageInfo.MipLevels,
-            TextureImageInfo.Format, TextureConfig->GenerateMipmap
+            Info.Image, Info.Width, Info.Height, Info.MipLevels,
+            Info.Format, Config->GenerateMipmap
         );
-        Vulkan_EndSingleTimeCommandBuffer(GpuContext, Vk->CommandPool, CmdBuf);
+        Vulkan_EndSingleTimeCommandBuffer(&Vk->GpuContext, Vk->CommandPool, CmdBuf);
     }
-
-    VkSampler Sampler = Vulkan_ResourceGroup_GetSampler(Vk, TextureConfig->SamplerHandle);
-
-    u32 Index = Vulkan_ResourceGroup_PushTexture(ResourceGroup, &(vk_texture) {
-        .State = VULKAN_TEXTURE_STATE_SHADER_READONLY,
-        .Image = TextureImageHandle,
-        .ImageView = TextureImageInfo.ImageView,
-        .SamplerReference = Sampler,
-    });
     renderer_texture_handle Handle = {
         .Value = Vulkan_ResourceGroup_MakeHandle(ResourceGroup, Index),
     };
@@ -2769,54 +2780,31 @@ renderer_texture_handle Renderer_CreateStaticTexture(
 renderer_texture_handle Renderer_CreateMutableTexture(
     renderer *Vk, 
     renderer_resource_group_handle ResourceGroupHandle,
-    const renderer_mutable_texture_config *Config,
+    const renderer_texture_config *Config,
     void **OutTextureBuffer,
     isize *OutTextureBufferSizeBytes
 ) {
-    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
-    int MipLevels = Config->MipLevels == 0? 1 : Config->MipLevels;
     ASSERT(Config->Format == RENDERER_IMAGE_FORMAT_RGBA 
         || Config->Format == RENDERER_IMAGE_FORMAT_BGRA, 
         "Unsupported image format for mutable texture"
     );
-    uint PixelSizeBytes = 4;
+    vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
 
-    vk_texture_state State = VULKAN_TEXTURE_STATE_UNDEFINED;
-    vkm_image_handle ImageHandle;
-    VkImageView ImageView;
-    {
-        VkFormat ImageFormat = Vulkan_GetVkFormat(Config->Format);
-        ImageHandle = Vkm_CreateImage(&ResourceGroup->GpuAllocator, &(vkm_image_config) {
-            .Width = Config->Width,
-            .Height = Config->Height,
-            .MipLevels = MipLevels,
-            .Aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-            .Sample = VK_SAMPLE_COUNT_1_BIT,
-            .Format = ImageFormat,
-            .Tiling = VK_IMAGE_TILING_OPTIMAL,
-            .Usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,
-        });
-        vkm_image_info ImageInfo = Vkm_GetImageInfo(&ResourceGroup->GpuAllocator, ImageHandle);
-        ImageView = ImageInfo.ImageView;
-    }
+    isize ImageSizeBytes;
+    vkm_image_info Info;
+    u32 Index = Vulkan_ResourceGroup_CreateTexture(Vk, 
+        ResourceGroup, Config, VULKAN_TEXTURE_STATE_UNDEFINED,
+        &Info, &ImageSizeBytes
+    );
+    vk_texture *Texture = &ResourceGroup->Textures.Data[Index];
+    Texture->ImageBuffer = Arena_Alloc(&ResourceGroup->CpuArena, ImageSizeBytes);
+    Texture->ImageBufferSizeBytes = ImageSizeBytes;
 
-    isize ImageBufferSizeBytes = PixelSizeBytes * Config->Width * Config->Height;
-    void *ImageBuffer = Arena_Alloc(&ResourceGroup->CpuArena, ImageBufferSizeBytes);
-
-    VkSampler Sampler = Vulkan_ResourceGroup_GetSampler(Vk, Config->SamplerHandle);
-    u32 Index = Vulkan_ResourceGroup_PushTexture(ResourceGroup, &(vk_texture) {
-        .State = State,
-        .Image = ImageHandle,
-        .ImageView = ImageView,
-        .SamplerReference = Sampler,
-        .ImageBuffer = ImageBuffer,
-        .ImageBufferSizeBytes = ImageBufferSizeBytes,
-    });
     renderer_texture_handle Handle = {
         .Value = Vulkan_ResourceGroup_MakeHandle(ResourceGroup, Index),
     };
-    *OutTextureBuffer = ImageBuffer;
-    *OutTextureBufferSizeBytes = ImageBufferSizeBytes;
+    *OutTextureBuffer = Texture->ImageBuffer;
+    *OutTextureBufferSizeBytes = ImageSizeBytes;
     return Handle;
 }
 

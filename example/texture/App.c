@@ -162,7 +162,7 @@ internal renderer_texture_handle LoadTexture(
         goto Error;
     }
 
-    renderer_static_texture_config Config = {
+    renderer_texture_config Config = {
         .Format = RENDERER_IMAGE_FORMAT_RGBA,
         .Width = Width,
         .Height = Height,
@@ -266,7 +266,7 @@ internal void InitRenderer(app *App, const char *AppName)
         App->Textures[TEXTURE_COUNT - 1] = Renderer_CreateMutableTexture(
             App->Renderer, 
             RENDERER_GLOBAL_RESOURCE_GROUP, 
-            &(renderer_mutable_texture_config) {
+            &(renderer_texture_config) {
                 .Format = RENDERER_IMAGE_FORMAT_RGBA,
                 .Width = App->CustomTextureWidth,
                 .Height = App->CustomTextureHeight,
