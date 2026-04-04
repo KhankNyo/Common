@@ -2793,9 +2793,26 @@ renderer_texture_handle Renderer_CreateMutableTexture(
     isize ImageSizeBytes;
     vkm_image_info Info;
     u32 Index = Vulkan_ResourceGroup_CreateTexture(Vk, 
-        ResourceGroup, Config, VULKAN_TEXTURE_STATE_UNDEFINED,
+        ResourceGroup, Config, VULKAN_TEXTURE_STATE_SHADER_READONLY,
         &Info, &ImageSizeBytes
     );
+    {
+        /* NOTE: must transition image to shader readonly optimal even though the texture might not be used 
+           because AMD drivers complain while Nvidia don't */
+        VkCommandBuffer CmdBuf = Vulkan_BeginSingleTimeCommandBuffer(&Vk->GpuContext, Vk->CommandPool);
+        Vulkan_CmdTransitionImageLayout(CmdBuf, 
+            Info.Image, Info.Format, Info.MipLevels,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+        );
+        Vulkan_CmdTransitionImageLayout(CmdBuf, 
+            Info.Image, Info.Format, Info.MipLevels,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        );
+        Vulkan_EndSingleTimeCommandBuffer(&Vk->GpuContext, Vk->CommandPool, CmdBuf);
+    }
+
     vk_texture *Texture = &ResourceGroup->Textures.Data[Index];
     Texture->ImageBuffer = Arena_Alloc(&ResourceGroup->CpuArena, ImageSizeBytes);
     Texture->ImageBufferSizeBytes = ImageSizeBytes;
