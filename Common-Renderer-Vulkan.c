@@ -2274,7 +2274,7 @@ renderer_msaa_flags Renderer_GetAvailableMSAAFlags(renderer_handle Vk)
 
 void Renderer_SetScreenMSAA(renderer_handle Vk, renderer_msaa_flags OneFlag)
 {
-    ASSERT(IS_POWER_OF_2(OneFlag), "Must specify only 1 RENDERER_MSAA_xxx flag to %s(): %02x", __func__, OneFlag);
+    UNREACHABLE_IF(!IS_POWER_OF_2(OneFlag), "Must specify only 1 RENDERER_MSAA_xxx flag to %s(): %02x", __func__, OneFlag);
     VkSampleCountFlagBits MSAASample = Vulkan_GetVkSampleCountFlags(OneFlag);
     if (MSAASample == Vk->RenderTarget.SampleCount)
         return;
@@ -2383,13 +2383,11 @@ internal void Vulkan_ResourceGroup_Init(renderer *Vk, vk_resource_group *Resourc
                     .MemoryCapacityBytes = UniformBufferSizeBytes,
                 }
             );
-            DEBUG_ONLY(
-                vkm_buffer_info BufferInfo = Vkm_GetBufferInfo(
-                    &ResourceGroup->GpuAllocator, 
-                    ResourceGroup->UniformBuffers[i]
-                )
+            vkm_buffer_info BufferInfo = Vkm_GetBufferInfo(
+                &ResourceGroup->GpuAllocator, 
+                ResourceGroup->UniformBuffers[i]
             );
-            ASSERT(BufferInfo.CapacityBytes <= Vk->Gpus.Selected.Properties.limits.maxUniformBufferRange, 
+            UNREACHABLE_IF(BufferInfo.CapacityBytes > Vk->Gpus.Selected.Properties.limits.maxUniformBufferRange, 
                 "UNIFORM BUFFER TOO BIG, rounded: %ld, provided: %ld, max allowed by device: %d", 
                 BufferInfo.CapacityBytes, UniformBufferSizeBytes, Vk->Gpus.Selected.Properties.limits.maxUniformBufferRange
             );
@@ -2484,7 +2482,7 @@ void Renderer_DestroyResourceGroup(
     renderer_resource_group_handle ResourceGroupHandle
 ) {
     vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
-    ASSERT(ResourceGroup != Vk->GlobalResourceGroup, "Cannot destroy global resource group.");
+    UNREACHABLE_IF(ResourceGroup == Vk->GlobalResourceGroup, "Cannot destroy global resource group.");
 
     DoubleLink_Unlink(&Vk->ResourceGroupHead, ResourceGroup);
     DoubleLink_Push(&Vk->ResourceGroupFreeSlots, ResourceGroup);
@@ -2567,7 +2565,7 @@ renderer_resource_binding Renderer_BindResourceGroup(
     /* udpate descriptor set */
     Arena_Scope(Arena)
     {
-        ASSERT(ResourceGroup->Textures.Count <= VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT);
+        UNREACHABLE_IF(ResourceGroup->Textures.Count > VULKAN_RESOURCE_GROUP_MAX_ELEM_COUNT, "Too many textures in a resource group");
         /* update/write descriptor sets */
 
         VkDescriptorImageInfo *TextureDescriptors;
@@ -2784,8 +2782,9 @@ renderer_texture_handle Renderer_CreateMutableTexture(
     void **OutTextureBuffer,
     isize *OutTextureBufferSizeBytes
 ) {
-    ASSERT(Config->Format == RENDERER_IMAGE_FORMAT_RGBA 
-        || Config->Format == RENDERER_IMAGE_FORMAT_BGRA, 
+    UNREACHABLE_IF(
+        !(Config->Format == RENDERER_IMAGE_FORMAT_RGBA 
+        || Config->Format == RENDERER_IMAGE_FORMAT_BGRA), 
         "Unsupported image format for mutable texture"
     );
     vk_resource_group *ResourceGroup = Vulkan_GetVkResourceGroup(Vk, ResourceGroupHandle.Value);
@@ -2833,7 +2832,7 @@ void Renderer_UpdateMutableTexture(
     (void)Config;
     vk_resource_group_and_index Extract = Vulkan_ResourceGroup_ExtractHandle(TextureHandle.Value);
     vk_texture *Texture = &Extract.ResourceGroup->Textures.Data[Extract.Handle];
-    ASSERT(Texture->ImageBuffer, "Cannot update immutable texture");
+    UNREACHABLE_IF(Texture->ImageBuffer == NULL, "Cannot update immutable texture");
     Vk->StagingBufferRequiredSizeBytes += Texture->ImageBufferSizeBytes;
 
     Vulkan_PushUpdateResource(Vk,
@@ -2921,8 +2920,8 @@ void Renderer_UpdateMutableMesh(
     const renderer_update_mesh_config *Config
 ) {
     vk_mesh *Mesh = (typeof(Mesh))MutableMesh.Value;
-    ASSERT(Mesh->VertexBufferPtr && Mesh->IndexBufferPtr, "Cannot update static mesh");
-    ASSERT(Config->VertexCount <= Mesh->VertexCount && Config->IndexCount <= Mesh->IndexCount, "TODO: resize buffers");
+    UNREACHABLE_IF(Mesh->VertexBufferPtr == NULL || Mesh->IndexBufferPtr == NULL, "Cannot update static mesh");
+    UNREACHABLE_IF(Config->VertexCount > Mesh->VertexCount || Config->IndexCount > Mesh->IndexCount, "TODO: resize buffers");
 
     Mesh->VertexCount = Config->VertexCount;
     Mesh->IndexCount = Config->IndexCount;
