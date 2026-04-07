@@ -2713,6 +2713,11 @@ internal u32 Vulkan_ResourceGroup_CreateTexture(
     vkm_image_info *OutInfo,
     isize *OutImageSizeBytes
 ) {
+    UNREACHABLE_IF(
+        TextureConfig->Width == 0 || TextureConfig->Height == 0, 
+        "Width and height of mutable texture cannot initially be 0: %d, %d", 
+        TextureConfig->Width, TextureConfig->Height
+    );
     int MipLevels = TextureConfig->MipLevels? TextureConfig->MipLevels : 1;
     VkFormat ImageFormat = Vulkan_GetVkFormat(TextureConfig->Format);
 
