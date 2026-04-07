@@ -106,7 +106,7 @@ extern "C" {
         die_IMMEDIATELY();\
     }\
 } while (0)
-#define UNREACHABLE() UNREACHABLE_IF(true, "Unreachable but reachable!!!!!!")
+#define UNREACHABLE(...) UNREACHABLE_IF(true, "Unreachable: "__VA_ARGS__)
 #define ASSERT(cond, ...) DEBUG_ONLY(UNREACHABLE_IF(!(cond), "ASSERTION FAILED '"#cond"':\n" __VA_ARGS__))
 #define TODO(...) STATIC_ASSERT(false, "TODO: " __VA_ARGS__)
 #define RUNTIME_TODO(...) UNREACHABLE_IF(true, "TODO: "__VA_ARGS__)
