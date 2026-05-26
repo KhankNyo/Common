@@ -387,6 +387,17 @@ force_inline bool32 SubstringsAreEqual(const char *A, const char *B, isize Lengt
     return Length == 0;
 }
 
+
+force_inline float Lerpf(float A, float B, float Percentage)
+{
+    return A + Percentage * (B - A);
+}
+
+force_inline double Lerpd(double A, double B, double Percentage)
+{
+    return A + Percentage * (B - A);
+}
+
 #endif /* COMMON_H */
 
 
