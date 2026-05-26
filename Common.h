@@ -398,6 +398,42 @@ force_inline double Lerpd(double A, double B, double Percentage)
     return A + Percentage * (B - A);
 }
 
+
+
+/* https://gist.github.com/skeeto/65e74302355bb5e51af639738f2ef872 */
+force_inline u64 RandSplittable64(u64 x)
+{
+    x ^= x >> 30;
+    x *= 0xbf58476d1ce4e5b9;
+    x ^= x >> 27;
+    x *= 0x94d049bb133111eb;
+    x ^= x >> 31;
+    return x;
+}
+
+/* https://gist.github.com/skeeto/65e74302355bb5e51af639738f2ef872 */
+force_inline u32 Redditor32(u32 x)
+{
+    x ^= x >> 16;
+    x *= 0x96310aa7;
+    x ^= x >> 16;
+    x *= 0x74471A67;
+    x ^= x >> 16;
+    return x;
+}
+
+force_inline u64 Rand64(u64 *Seed)
+{
+    *Seed = RandSplittable64(*Seed);
+    return *Seed;
+}
+
+force_inline u32 Rand32(u32 *Seed)
+{
+    *Seed = Redditor32(*Seed);
+    return *Seed;
+}
+
 #endif /* COMMON_H */
 
 
